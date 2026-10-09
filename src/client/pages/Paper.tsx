@@ -1,0 +1,547 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { api, enc, postStream, PROVIDER_LABELS, timeAgo, type ChatMessage, type ModelInfo, type PaperMeta, type ProviderId, type Session, type ToolUse } from "../api";
+import { useAuth } from "../auth";
+import { Link } from "../components/Link";
+import { Markdown } from "../components/Markdown";
+import { navigate } from "../router";
+
+type ReaderTab = "pdf" | "text";
+
+export function PaperPage({ arxivId, sessionId }: { arxivId: string; sessionId: string | null }) {
+  const [paper, setPaper] = useState<PaperMeta | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [mobilePane, setMobilePane] = useState<"read" | "chat">("read");
+
+  useEffect(() => {
+    api<{ paper: PaperMeta }>(`/papers/${enc(arxivId)}`)
+      .then((r) => setPaper(r.paper))
+      .catch((e) => setError((e as Error).message));
+  }, [arxivId]);
+
+  const quote = useCallback((text: string) => {
+    const q = text.trim().split("\n").map((l) => `> ${l}`).join("\n");
+    setDraft((d) => `${q}\n\n${d}`);
+    setMobilePane("chat");
+  }, []);
+
+  if (error) return <p className="error">{error}</p>;
+  if (!paper) return <p className="muted">Loading paper…</p>;
+
+  return (
+    <div className="paper">
+      <div className="paper-head">
+        <h1>{paper.title}</h1>
+        <div className="byline">{paper.authors.join(", ")}</div>
+        <div className="meta">
+          <span>arXiv:{paper.arxiv_id}</span>
+          {paper.published && <span>{paper.published.slice(0, 10)}</span>}
+          {paper.categories.map((c) => (
+            <span key={c} className="tag">
+              {c}
+            </span>
+          ))}
+          <a href={`https://arxiv.org/abs/${paper.arxiv_id}`} target="_blank" rel="noreferrer">
+            arXiv page ↗
+          </a>
+        </div>
+        <div className="mobile-switch">
+          <button className={mobilePane === "read" ? "on" : ""} onClick={() => setMobilePane("read")}>
+            Read
+          </button>
+          <button className={mobilePane === "chat" ? "on" : ""} onClick={() => setMobilePane("chat")}>
+            Chat
+          </button>
+        </div>
+      </div>
+      <div className={`panes show-${mobilePane}`}>
+        <Reader paper={paper} onQuote={quote} />
+        <ChatPanel paper={paper} sessionId={sessionId} draft={draft} setDraft={setDraft} />
+      </div>
+    </div>
+  );
+}
+
+function Reader({ paper, onQuote }: { paper: PaperMeta; onQuote: (t: string) => void }) {
+  const [tab, setTab] = useState<ReaderTab>("pdf");
+  const [text, setText] = useState<{ body: string; source: string } | null>(null);
+  const [loadingText, setLoadingText] = useState(false);
+  const [textError, setTextError] = useState<string | null>(null);
+  const [selection, setSelection] = useState("");
+
+  useEffect(() => {
+    if (tab !== "text" || text || loadingText) return;
+    setLoadingText(true);
+    api<{ body: string; source: string }>(`/papers/${enc(paper.arxiv_id)}/text`)
+      .then(setText)
+      .catch((e) => setTextError((e as Error).message))
+      .finally(() => setLoadingText(false));
+  }, [tab, text, loadingText, paper.arxiv_id]);
+
+  const captureSelection = () => setSelection(window.getSelection()?.toString().trim() ?? "");
+
+  return (
+    <section className="reader">
+      <div className="toolbar">
+        <div className="tabs">
+          <button className={tab === "pdf" ? "on" : ""} onClick={() => setTab("pdf")}>
+            PDF
+          </button>
+          <button className={tab === "text" ? "on" : ""} onClick={() => setTab("text")}>
+            Text
+          </button>
+        </div>
+        {tab === "text" && selection && (
+          <button className="small" onClick={() => (onQuote(selection), setSelection(""))}>
+            Ask about selection
+          </button>
+        )}
+        {tab === "pdf" && (
+          <a className="small" href={`/api/papers/${enc(paper.arxiv_id)}/pdf`} target="_blank" rel="noreferrer">
+            Open PDF ↗
+          </a>
+        )}
+      </div>
+      {tab === "pdf" ? (
+        <iframe className="pdf" title={paper.title} src={`/api/papers/${enc(paper.arxiv_id)}/pdf#view=FitH`} />
+      ) : (
+        <div className="paper-text" onMouseUp={captureSelection} onTouchEnd={captureSelection}>
+          {loadingText && <p className="muted">Extracting full text (first time can take a few seconds)…</p>}
+          {textError && <p className="error">{textError}</p>}
+          {text && (
+            <>
+              <p className="muted small">
+                Extracted from {text.source === "html" ? "arXiv's HTML rendering" : text.source === "pdf" ? "the PDF" : "the abstract only"}. Select text
+                and click “Ask about selection”.
+              </p>
+              {text.source === "html" ? <Markdown text={text.body} /> : <pre className="plain">{text.body}</pre>}
+            </>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+const STARTERS = [
+  "Give me a 5-minute overview of this paper.",
+  "What problem does this solve, and why does it matter?",
+  "Walk me through the method step by step.",
+  "What background do I need to understand this?",
+  "What are the main results and limitations?",
+];
+
+const TOOL_LABELS: Record<string, (a: Record<string, unknown>) => string> = {
+  paper_outline: () => "Read the outline",
+  search_paper: (a) => `Searched the paper for “${a.query}”`,
+  read_paper: (a) => (a.section ? `Read section “${a.section}”` : `Read text at ${a.offset ?? 0}`),
+  recall_knowledge: (a) => `Recalled notes on “${a.query}”`,
+  save_knowledge: () => "Saved a note to your knowledge",
+  search_arxiv: (a) => `Searched arXiv for “${a.query}”`,
+  get_arxiv_paper: (a) => `Looked up arXiv:${a.arxiv_id}`,
+};
+const toolLabel = (t: { name: string; args: Record<string, unknown> }) => (TOOL_LABELS[t.name]?.(t.args) ?? t.name);
+
+interface ModelChoice {
+  provider: ProviderId;
+  model: string;
+}
+
+function useModelChoice(): [ModelChoice | null, (c: ModelChoice) => void, Partial<Record<ProviderId, { connected: boolean }>>] {
+  const { user } = useAuth();
+  const [choice, setChoice] = useState<ModelChoice | null>(null);
+  const [providers, setProviders] = useState<Partial<Record<ProviderId, { connected: boolean }>>>({});
+  useEffect(() => {
+    if (!user) return;
+    api<{ providers: Record<ProviderId, { connected: boolean }> }>("/settings")
+      .then((s) => setProviders(s.providers))
+      .catch(() => {});
+    let saved: ModelChoice | null = null;
+    try {
+      saved = JSON.parse(localStorage.getItem("lp_model") ?? "null");
+    } catch {}
+    setChoice(saved ?? { provider: user.default_provider, model: user.default_model ?? "" });
+  }, [user]);
+  const set = (c: ModelChoice) => {
+    setChoice(c);
+    try {
+      localStorage.setItem("lp_model", JSON.stringify(c));
+    } catch {}
+  };
+  return [choice, set, providers];
+}
+
+function ModelPicker({ choice, onChange, providers }: { choice: ModelChoice; onChange: (c: ModelChoice) => void; providers: Partial<Record<ProviderId, { connected: boolean }>> }) {
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  useEffect(() => {
+    setModels([]);
+    api<{ models: ModelInfo[] }>(`/models/${choice.provider}`)
+      .then((r) => setModels(r.models))
+      .catch(() => setModels([]));
+  }, [choice.provider]);
+  const available = (Object.keys(PROVIDER_LABELS) as ProviderId[]).filter((p) => p === "openrouter" || providers[p]?.connected);
+  const listId = `models-${choice.provider}`;
+  return (
+    <div className="model-picker">
+      <select value={choice.provider} onChange={(e) => onChange({ provider: e.target.value as ProviderId, model: "" })} aria-label="Provider">
+        {available.map((p) => (
+          <option key={p} value={p}>
+            {PROVIDER_LABELS[p]}
+          </option>
+        ))}
+      </select>
+      <input
+        list={listId}
+        value={choice.model}
+        placeholder={choice.provider === "openrouter" ? "openrouter/free" : "model id"}
+        onChange={(e) => onChange({ ...choice, model: e.target.value })}
+        aria-label="Model"
+      />
+      <datalist id={listId}>
+        {models.slice(0, 400).map((m) => (
+          <option key={m.id} value={m.id}>
+            {m.name}
+            {m.free ? " (free)" : ""}
+          </option>
+        ))}
+      </datalist>
+    </div>
+  );
+}
+
+function ChatPanel({ paper, sessionId, draft, setDraft }: { paper: PaperMeta; sessionId: string | null; draft: string; setDraft: (s: string | ((d: string) => string)) => void }) {
+  const { user, loading } = useAuth();
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [session, setSession] = useState<Session | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [pending, setPending] = useState<{ status: string; tools: { name: string; args: Record<string, unknown>; ok?: boolean }[] } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [showNew, setShowNew] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [choice, setChoice, providers] = useModelChoice();
+  const abort = useRef<AbortController | null>(null);
+  const bottom = useRef<HTMLDivElement>(null);
+
+  const refreshSessions = useCallback(() => {
+    if (!user) return Promise.resolve([] as Session[]);
+    return api<{ sessions: Session[] }>(`/sessions?arxiv_id=${enc(paper.arxiv_id)}`).then((r) => {
+      setSessions(r.sessions);
+      return r.sessions;
+    });
+  }, [user, paper.arxiv_id]);
+
+  useEffect(() => {
+    refreshSessions().catch(() => {});
+  }, [refreshSessions]);
+
+  useEffect(() => {
+    if (!user || !sessionId) {
+      setSession(null);
+      setMessages([]);
+      return;
+    }
+    api<{ session: Session; messages: ChatMessage[] }>(`/sessions/${sessionId}`)
+      .then((r) => {
+        setSession(r.session);
+        setMessages(r.messages);
+      })
+      .catch((e) => setError((e as Error).message));
+  }, [user, sessionId]);
+
+  useEffect(() => bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" }), [messages, pending]);
+
+  const openSession = (id: string | null) => {
+    if (!id) {
+      setSession(null);
+      setMessages([]);
+    }
+    navigate(`/paper/${enc(paper.arxiv_id)}${id ? `?session=${id}` : ""}`, true);
+  };
+
+  const send = async (text: string) => {
+    const content = text.trim();
+    if (!content || pending) return;
+    setError(null);
+    let s = session;
+    if (!s) {
+      try {
+        s = (await api<{ session: Session }>("/sessions", { method: "POST", json: { arxiv_id: paper.arxiv_id } })).session;
+      } catch (e) {
+        setError((e as Error).message);
+        return;
+      }
+      setSession(s);
+      history.replaceState(null, "", `/paper/${enc(paper.arxiv_id)}?session=${s.id}`);
+    }
+    const userMsg: ChatMessage = { id: `local-${Date.now()}`, role: "user", content, meta: null, created_at: Date.now() };
+    setMessages((m) => [...m, userMsg]);
+    setDraft("");
+    setPending({ status: "Sending…", tools: [] });
+    const ac = new AbortController();
+    abort.current = ac;
+    let finished = false;
+    try {
+      await postStream(
+        `/sessions/${s.id}/messages`,
+        { content, provider: choice?.provider, model: choice?.model || undefined },
+        (event, data) => {
+          if (event === "status") setPending((p) => p && { ...p, status: data.text });
+          else if (event === "tool_start") setPending((p) => p && { ...p, status: `${toolLabel(data)}…`, tools: [...p.tools, { name: data.name, args: data.args }] });
+          else if (event === "tool_end")
+            setPending((p) => {
+              if (!p) return p;
+              const tools = [...p.tools];
+              const i = tools.map((t) => t.name).lastIndexOf(data.name);
+              if (i >= 0) tools[i] = { ...tools[i]!, ok: data.ok };
+              return { ...p, tools };
+            });
+          else if (event === "provider_error") setPending((p) => p && { ...p, status: `${data.provider} failed, trying fallback…` });
+          else if (event === "done") {
+            finished = true;
+            setMessages((m) => [...m, { id: `local-${Date.now()}-a`, role: "assistant", content: data.content, meta: data.meta, created_at: Date.now() }]);
+          } else if (event === "error") {
+            finished = true;
+            throw new Error(data.message);
+          }
+        },
+        ac.signal,
+      );
+      if (!finished && !ac.signal.aborted) throw new Error("The connection closed before an answer arrived.");
+    } catch (e) {
+      if (!ac.signal.aborted) {
+        setError((e as Error).message);
+        // Server persists nothing on failure; drop the optimistic message and restore the draft.
+        setMessages((m) => m.filter((x) => x !== userMsg));
+        setDraft(content);
+      } else {
+        setMessages((m) => m.filter((x) => x !== userMsg));
+        setDraft(content);
+      }
+    } finally {
+      setPending(null);
+      abort.current = null;
+      refreshSessions().catch(() => {});
+    }
+  };
+
+  const summarize = async () => {
+    if (!session) return;
+    setNotice("Summarizing this session into your knowledge base…");
+    try {
+      await api(`/sessions/${session.id}/summarize`, { method: "POST" });
+      setNotice("Saved a summary to your knowledge base. New sessions will be able to build on it.");
+    } catch (e) {
+      setNotice(null);
+      setError((e as Error).message);
+    }
+  };
+
+  if (loading) return <section className="chat" />;
+  if (!user) {
+    const next = encodeURIComponent(location.pathname + location.search);
+    return (
+      <section className="chat empty-chat">
+        <h2>Chat with this paper</h2>
+        <p className="muted">Ask questions, get explanations at your level, and keep your notes across sessions. Free to start.</p>
+        <div className="row">
+          <Link className="button primary" href={`/signup?next=${next}`}>
+            Create account
+          </Link>
+          <Link className="button" href={`/login?next=${next}`}>
+            Sign in
+          </Link>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="chat">
+      <div className="toolbar">
+        <select value={session?.id ?? ""} onChange={(e) => openSession(e.target.value || null)} aria-label="Session">
+          <option value="">{session ? "— new conversation —" : "New conversation"}</option>
+          {sessions.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.title} · {timeAgo(s.updated_at)}
+            </option>
+          ))}
+        </select>
+        <button className="small" onClick={() => setShowNew(true)} title="Start a new conversation, optionally building on earlier ones">
+          + New
+        </button>
+        {session && messages.length > 1 && (
+          <button className="small" onClick={summarize} title="Summarize what you learned into your knowledge base">
+            Save to knowledge
+          </button>
+        )}
+      </div>
+      {choice && <ModelPicker choice={choice} onChange={setChoice} providers={providers} />}
+      {showNew && (
+        <NewSessionDialog
+          paper={paper}
+          onClose={() => setShowNew(false)}
+          onCreated={(s) => {
+            setShowNew(false);
+            openSession(s.id);
+            refreshSessions().catch(() => {});
+          }}
+        />
+      )}
+      {session && session.builds_on.length > 0 && <p className="muted small builds">Builds on {session.builds_on.length} earlier session(s).</p>}
+      {notice && (
+        <p className="notice" onClick={() => setNotice(null)}>
+          {notice}
+        </p>
+      )}
+
+      <div className="messages">
+        {messages.length === 0 && !pending && (
+          <div className="starters">
+            <p className="muted">Ask anything about this paper. Some ideas:</p>
+            {STARTERS.map((s) => (
+              <button key={s} className="starter" onClick={() => send(s)}>
+                {s}
+              </button>
+            ))}
+          </div>
+        )}
+        {messages.map((m) => (
+          <div key={m.id} className={`msg ${m.role}`}>
+            {m.role === "assistant" && m.meta?.tools?.length ? <ToolTrail tools={m.meta.tools} /> : null}
+            {m.role === "assistant" ? <Markdown text={m.content} /> : <div className="user-text">{m.content}</div>}
+            {m.role === "assistant" && m.meta?.model && <div className="model-tag">{m.meta.model}</div>}
+          </div>
+        ))}
+        {pending && (
+          <div className="msg assistant pending">
+            {pending.tools.length > 0 && <ToolTrail tools={pending.tools} />}
+            <div className="status">
+              <span className="dot" /> {pending.status}
+            </div>
+          </div>
+        )}
+        {error && <p className="error">{error}</p>}
+        <div ref={bottom} />
+      </div>
+
+      <form
+        className="composer"
+        onSubmit={(e) => {
+          e.preventDefault();
+          send(draft);
+        }}
+      >
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              send(draft);
+            }
+          }}
+          placeholder="Ask about this paper… (Shift+Enter for a new line)"
+          rows={3}
+        />
+        {pending ? (
+          <button type="button" onClick={() => abort.current?.abort()}>
+            Stop
+          </button>
+        ) : (
+          <button className="primary" disabled={!draft.trim()}>
+            Send
+          </button>
+        )}
+      </form>
+    </section>
+  );
+}
+
+function ToolTrail({ tools }: { tools: (Pick<ToolUse, "name" | "args"> & { ok?: boolean })[] }) {
+  return (
+    <ul className="tool-trail">
+      {tools.map((t, i) => (
+        <li key={i} className={t.ok === false ? "failed" : ""}>
+          {toolLabel(t)}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function NewSessionDialog({ paper, onClose, onCreated }: { paper: PaperMeta; onClose: () => void; onCreated: (s: Session) => void }) {
+  const [all, setAll] = useState<Session[] | null>(null);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api<{ sessions: Session[] }>("/sessions")
+      .then((r) => setAll(r.sessions.filter((s) => (s.message_count ?? 0) > 0)))
+      .catch((e) => setError((e as Error).message));
+  }, []);
+
+  const sorted = useMemo(
+    () => (all ?? []).slice().sort((a, b) => Number(b.arxiv_id === paper.arxiv_id) - Number(a.arxiv_id === paper.arxiv_id) || b.updated_at - a.updated_at),
+    [all, paper.arxiv_id],
+  );
+
+  const create = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await api<{ session: Session }>("/sessions", { method: "POST", json: { arxiv_id: paper.arxiv_id, builds_on: [...picked] } });
+      onCreated(r.session);
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="dialog">
+      <h3>New conversation</h3>
+      <p className="muted small">
+        Optionally build on earlier sessions (up to 5). Their summaries are given to the tutor so you can pick up where you left off. Your saved
+        notes are always searchable.
+      </p>
+      {!all && !error && <p className="muted small">Loading your sessions…</p>}
+      {all && all.length === 0 && <p className="muted small">No earlier sessions yet.</p>}
+      <ul className="pick-list">
+        {sorted.map((s) => (
+          <li key={s.id}>
+            <label>
+              <input
+                type="checkbox"
+                checked={picked.has(s.id)}
+                disabled={!picked.has(s.id) && picked.size >= 5}
+                onChange={(e) => {
+                  const next = new Set(picked);
+                  e.target.checked ? next.add(s.id) : next.delete(s.id);
+                  setPicked(next);
+                }}
+              />
+              <span>
+                <strong>{s.title}</strong>
+                <span className="muted small">
+                  {" "}
+                  · {s.arxiv_id === paper.arxiv_id ? "this paper" : (s.paper_title ?? s.arxiv_id)} · {timeAgo(s.updated_at)}
+                  {s.summary ? " · summarized" : ""}
+                </span>
+              </span>
+            </label>
+          </li>
+        ))}
+      </ul>
+      {error && <p className="error">{error}</p>}
+      <div className="row">
+        <button className="primary" onClick={create} disabled={busy}>
+          {busy ? (picked.size ? "Summarizing earlier sessions…" : "Creating…") : "Start"}
+        </button>
+        <button onClick={onClose} disabled={busy}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
