@@ -91,6 +91,9 @@ export async function resolveChain(
   const keys = await loadKeys(env, user.id);
   const provider = requested.provider ?? user.default_provider ?? "openrouter";
   const model = requested.model || (provider === user.default_provider ? user.default_model : null) || null;
+  if (requested.provider && provider !== "openrouter" && !model && keys.get(provider)) {
+    throw new HTTPException(400, { message: `Choose a model for ${provider}` });
+  }
   const orFetch = openRouterFetch(appUrl, env.APP_NAME);
   const chain: ProviderConfig[] = [];
   const timeout_ms = 90_000;
@@ -175,6 +178,27 @@ export async function freeUsageRemaining(env: Env, userId: string): Promise<numb
   return limit - (row?.requests ?? 0);
 }
 
+/** Atomically takes one unit of today's shared quota; false when the cap is reached. */
+export async function reserveFreeUsage(env: Env, userId: string): Promise<boolean> {
+  const limit = Number(env.FREE_DAILY_LIMIT ?? 50);
+  if (limit <= 0) return false;
+  const res = await env.DB.prepare(
+    `INSERT INTO free_usage (user_id, day, requests) VALUES (?, ?, 1)
+     ON CONFLICT (user_id, day) DO UPDATE SET requests = requests + 1 WHERE requests < ?`,
+  )
+    .bind(userId, today(), limit)
+    .run();
+  return (res.meta?.changes ?? 0) > 0;
+}
+
+/** Corrects a reservation once the real number of shared calls is known (delta may be negative). */
+export async function adjustFreeUsage(env: Env, userId: string, delta: number): Promise<void> {
+  if (!delta) return;
+  await env.DB.prepare("UPDATE free_usage SET requests = MAX(0, requests + ?) WHERE user_id = ? AND day = ?")
+    .bind(delta, userId, today())
+    .run();
+}
+
 export async function recordFreeUsage(env: Env, userId: string, calls: number): Promise<void> {
   if (calls <= 0) return;
   await env.DB.prepare(
@@ -241,10 +265,14 @@ export async function listModels(env: Env, userId: string, provider: ProviderId)
 
 /** OpenRouter credit balance for the user's connected key, if any. */
 export async function openRouterCredits(apiKey: string): Promise<{ total: number; used: number } | null> {
-  const res = await fetch(`${OPENROUTER_BASE}/credits`, { headers: { authorization: `Bearer ${apiKey}` } });
-  if (!res.ok) return null;
-  const { data } = (await res.json()) as { data?: { total_credits: number; total_usage: number } };
-  return data ? { total: data.total_credits, used: data.total_usage } : null;
+  try {
+    const res = await fetch(`${OPENROUTER_BASE}/credits`, { headers: { authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(5000) });
+    if (!res.ok) return null;
+    const { data } = (await res.json()) as { data?: { total_credits: number; total_usage: number } };
+    return data ? { total: data.total_credits, used: data.total_usage } : null;
+  } catch {
+    return null; // decorative; never fail /settings over it
+  }
 }
 
 /** Completes OpenRouter's OAuth PKCE flow: exchanges the code for a user-controlled API key. */

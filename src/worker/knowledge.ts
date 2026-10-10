@@ -54,12 +54,22 @@ export async function addKnowledge(
   return row!.id;
 }
 
+const REPLAY_NOTE_CHARS = 500;
+
+/** Flattens a stored note to one plain line so it cannot fake headings, lists, or system text when replayed. */
+export function flattenNote(text: string, max = REPLAY_NOTE_CHARS): string {
+  const flat = text.replace(/^[#\-*>\s]+/gm, "").replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+}
+
 export function formatKnowledge(rows: KnowledgeRow[]): string {
   return rows
     .map((r) => {
       const src = r.arxiv_id ? ` (arXiv:${r.arxiv_id})` : "";
-      const tags = r.tags ? ` [${r.tags}]` : "";
-      return `- #${r.id} ${r.kind}${src}${tags}: ${r.content}`;
+      const tags = r.tags ? ` [${flattenNote(r.tags, 100)}]` : "";
+      // Notes saved by the tutor during a session (not typed by the user) are labelled as such.
+      const origin = r.kind === "note" && r.session_id ? "[tutor-written] " : "";
+      return `- #${r.id} ${r.kind}${src}${tags}: ${origin}${flattenNote(r.content)}`;
     })
     .join("\n");
 }

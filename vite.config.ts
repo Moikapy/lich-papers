@@ -19,8 +19,31 @@ function lichWorkersCompat(): Plugin {
   };
 }
 
+// Production CSP (meta tag, so it also covers the static assets). Skipped under `vite dev`, which needs inline scripts.
+// style-src allows inline styles for KaTeX.
+const CSP = [
+  "default-src 'self'",
+  "img-src 'self' data:",
+  "style-src 'self' 'unsafe-inline'",
+  "font-src 'self' data:",
+  "frame-src 'self'",
+  "form-action 'self'",
+  "object-src 'none'",
+  "base-uri 'self'",
+].join("; ");
+
+function cspMeta(): Plugin {
+  return {
+    name: "csp-meta",
+    transformIndexHtml: {
+      order: "post",
+      handler: (html, ctx) => (ctx.server ? html : html.replace("<head>", `<head>\n    <meta http-equiv="Content-Security-Policy" content="${CSP}" />`)),
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [lichWorkersCompat(), react(), cloudflare()],
+  plugins: [lichWorkersCompat(), react(), cloudflare(), cspMeta()],
   environments: {
     // Keep lich out of dev pre-bundling so the transform above also applies under `vite dev`.
     lich_papers: { optimizeDeps: { exclude: ["@moikapy/lich"] } },

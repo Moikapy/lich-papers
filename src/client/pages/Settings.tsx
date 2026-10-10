@@ -66,7 +66,7 @@ export function SettingsPage() {
           </div>
         )}
         {flash && (
-          <p className="notice" onClick={() => setFlash(null)}>
+          <p className="notice" role="button" tabIndex={0} onClick={() => setFlash(null)} onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setFlash(null)}>
             {flash}
           </p>
         )}
@@ -97,6 +97,7 @@ export function SettingsPage() {
 
 function OpenRouterCard({ data, reload }: { data: SettingsData; reload: () => void }) {
   const s = data.providers.openrouter;
+  const [error, setError] = useState<string | null>(null);
   const [showPaste, setShowPaste] = useState(false);
   const credits = data.openrouter_credits;
   const balance = credits ? credits.total - credits.used : null;
@@ -107,6 +108,7 @@ function OpenRouterCard({ data, reload }: { data: SettingsData; reload: () => vo
         The default. With OpenRouter connected you get the <code>openrouter/free</code> router at no cost, and if you add credits to your
         OpenRouter account you can pick any of its 300+ models.
       </p>
+      {error && <p className="error">{error}</p>}
       {s.connected ? (
         <>
           <p className="small">
@@ -118,8 +120,12 @@ function OpenRouterCard({ data, reload }: { data: SettingsData; reload: () => vo
             <button
               className="danger"
               onClick={async () => {
-                await api("/settings/keys/openrouter", { method: "DELETE" });
-                reload();
+                try {
+                  await api("/settings/keys/openrouter", { method: "DELETE" });
+                  reload();
+                } catch (e) {
+                  setError((e as Error).message);
+                }
               }}
             >
               Disconnect
@@ -148,6 +154,7 @@ function OpenRouterCard({ data, reload }: { data: SettingsData; reload: () => vo
 
 function KeyCard({ provider, status, reload }: { provider: ProviderId; status: ProviderStatus; reload: () => void }) {
   const [editing, setEditing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const help = KEY_HELP[provider];
   return (
     <section className="card">
@@ -160,6 +167,7 @@ function KeyCard({ provider, status, reload }: { provider: ProviderId; status: P
           Get a key ↗
         </a>
       </p>
+      {error && <p className="error">{error}</p>}
       {status.connected && !editing ? (
         <>
           <p className="small">
@@ -170,8 +178,12 @@ function KeyCard({ provider, status, reload }: { provider: ProviderId; status: P
             <button
               className="danger"
               onClick={async () => {
-                await api(`/settings/keys/${provider}`, { method: "DELETE" });
-                reload();
+                try {
+                  await api(`/settings/keys/${provider}`, { method: "DELETE" });
+                  reload();
+                } catch (e) {
+                  setError((e as Error).message);
+                }
               }}
             >
               Remove
@@ -182,6 +194,7 @@ function KeyCard({ provider, status, reload }: { provider: ProviderId; status: P
         <KeyForm
           provider={provider}
           initialBase={status.base_url ?? ""}
+          onCancel={status.connected ? () => setEditing(false) : undefined}
           onSaved={() => {
             setEditing(false);
             reload();
@@ -192,7 +205,7 @@ function KeyCard({ provider, status, reload }: { provider: ProviderId; status: P
   );
 }
 
-function KeyForm({ provider, initialBase = "", onSaved }: { provider: ProviderId; initialBase?: string; onSaved: () => void }) {
+function KeyForm({ provider, initialBase = "", onSaved, onCancel }: { provider: ProviderId; initialBase?: string; onSaved: () => void; onCancel?: () => void }) {
   const [key, setKey] = useState("");
   const [base, setBase] = useState(initialBase || (provider === "ollama" ? "https://ollama.com" : ""));
   const [busy, setBusy] = useState(false);
@@ -216,36 +229,49 @@ function KeyForm({ provider, initialBase = "", onSaved }: { provider: ProviderId
         }
       }}
     >
-      <input type="password" autoComplete="off" placeholder={KEY_HELP[provider].placeholder} value={key} onChange={(e) => setKey(e.target.value)} />
+      <input type="password" autoComplete="off" aria-label={`${PROVIDER_LABELS[provider]} API key`} placeholder={KEY_HELP[provider].placeholder} value={key} onChange={(e) => setKey(e.target.value)} />
       {showBase && (
         <input
+          aria-label="Base URL"
           placeholder={provider === "openai" ? "Base URL (optional, for OpenAI-compatible APIs)" : "Base URL"}
           value={base}
           onChange={(e) => setBase(e.target.value)}
         />
       )}
       {error && <p className="error">{error}</p>}
-      <button className="primary" disabled={busy}>
-        Save
-      </button>
+      <div className="row">
+        <button className="primary" disabled={busy}>
+          Save
+        </button>
+        {onCancel && (
+          <button type="button" onClick={onCancel} disabled={busy}>
+            Cancel
+          </button>
+        )}
+      </div>
       <p className="muted small">Keys are encrypted at rest and only used to call the provider on your behalf.</p>
     </form>
   );
 }
 
 function DefaultModelCard({ data, onSaved }: { data: SettingsData; onSaved: (p: ProviderId, m: string) => void }) {
-  const [provider, setProvider] = useState<ProviderId>(data.default_provider);
+  const available = (Object.keys(PROVIDER_LABELS) as ProviderId[]).filter((p) => p === "openrouter" || data.providers[p].connected);
+  const [provider, setProvider] = useState<ProviderId>(available.includes(data.default_provider) ? data.default_provider : "openrouter");
   const [model, setModel] = useState(data.default_model ?? "");
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [freeOnly, setFreeOnly] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const available = (Object.keys(PROVIDER_LABELS) as ProviderId[]).filter((p) => p === "openrouter" || data.providers[p].connected);
 
   useEffect(() => {
+    let cancelled = false;
     setModels([]);
+    setError(null);
     api<{ models: ModelInfo[] }>(`/models/${provider}`)
-      .then((r) => setModels(r.models))
-      .catch((e) => setError((e as Error).message));
+      .then((r) => !cancelled && setModels(r.models))
+      .catch((e) => !cancelled && setError((e as Error).message));
+    return () => {
+      cancelled = true;
+    };
   }, [provider]);
 
   const shown = models.filter((m) => !freeOnly || m.free);
@@ -257,7 +283,7 @@ function DefaultModelCard({ data, onSaved }: { data: SettingsData; onSaved: (p: 
         OpenRouter router automatically.
       </p>
       <div className="stack">
-        <select value={provider} onChange={(e) => (setProvider(e.target.value as ProviderId), setModel(""))}>
+        <select value={provider} aria-label="Default provider" onChange={(e) => (setProvider(e.target.value as ProviderId), setModel(""))}>
           {available.map((p) => (
             <option key={p} value={p}>
               {PROVIDER_LABELS[p]}
@@ -265,8 +291,9 @@ function DefaultModelCard({ data, onSaved }: { data: SettingsData; onSaved: (p: 
           ))}
         </select>
         {models.length > 0 ? (
-          <select value={model} onChange={(e) => setModel(e.target.value)}>
+          <select value={model} aria-label="Default model" onChange={(e) => setModel(e.target.value)}>
             <option value="">{provider === "openrouter" ? "openrouter/free (default)" : "Choose a model…"}</option>
+            {model && !shown.some((m) => m.id === model) && <option value={model}>{model}</option>}
             {shown.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.name}
@@ -275,7 +302,7 @@ function DefaultModelCard({ data, onSaved }: { data: SettingsData; onSaved: (p: 
             ))}
           </select>
         ) : (
-          <input placeholder="model id" value={model} onChange={(e) => setModel(e.target.value)} />
+          <input aria-label="Default model" placeholder="model id" value={model} onChange={(e) => setModel(e.target.value)} />
         )}
         {provider === "openrouter" && (
           <label className="inline small">

@@ -1,26 +1,31 @@
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { streamSSE } from "hono/streaming";
-import type { Message } from "@moikapy/lich";
-import { endSession, loadUser, currentUser, requireUser, sameOrigin, startSession } from "./auth";
+import type { Message, ProviderConfig } from "@moikapy/lich";
+import { clientIp, endSession, loadUser, currentUser, rateLimit, requireUser, sameOrigin, startSession } from "./auth";
 import { getPaper, getPaperWithBody, parseArxivId, searchArxiv, type Paper } from "./arxiv";
 import { hashPassword, verifyPassword } from "./crypto";
 import { PROVIDERS, type AppEnv, type Ctx, type Env, type ProviderId, type User } from "./env";
 import { addKnowledge, listKnowledge, searchKnowledge } from "./knowledge";
-import { paperTools, runChat, summarize, systemPrompt } from "./agent";
+import { paperTools, runChat, safeProviderMessage, summarize, systemPrompt } from "./agent";
 import {
   exchangeOpenRouterCode,
   freeUsageRemaining,
   listModels,
   loadKeys,
   openRouterCredits,
-  recordFreeUsage,
+  adjustFreeUsage,
+  reserveFreeUsage,
   resolveChain,
+  SHARED_PROVIDER,
   saveKey,
   validateBaseUrl,
 } from "./providers";
 
 const app = new Hono<AppEnv>().basePath("/api");
+
+/** Well-formed PBKDF2 hash nobody knows the password for; keeps login timing uniform. */
+const DUMMY_HASH = `pbkdf2$100000$${"A".repeat(22)}==$${"A".repeat(43)}=`;
 
 app.use("*", sameOrigin, loadUser);
 
@@ -41,7 +46,7 @@ const json = async <T>(c: { req: { json: () => Promise<unknown> } }): Promise<Pa
 const isProvider = (p: unknown): p is ProviderId => PROVIDERS.includes(p as ProviderId);
 
 function arxivIdParam(raw: string): string {
-  const id = parseArxivId(decodeURIComponent(raw));
+  const id = parseArxivId(raw);
   if (!id) throw new HTTPException(400, { message: "Not a valid arXiv id" });
   return id;
 }
@@ -53,24 +58,36 @@ app.get("/me", (c) => c.json({ user: c.get("user") }));
 app.post("/auth/signup", async (c) => {
   const { email, password } = await json<{ email: string; password: string }>(c);
   const mail = String(email ?? "").trim().toLowerCase();
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail)) throw new HTTPException(400, { message: "Enter a valid email" });
+  if (mail.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail)) throw new HTTPException(400, { message: "Enter a valid email" });
   if (String(password ?? "").length < 8) throw new HTTPException(400, { message: "Password must be at least 8 characters" });
+  await rateLimit(c, `signup:${clientIp(c)}`, 10, 60 * 60_000);
   const exists = await c.env.DB.prepare("SELECT 1 FROM users WHERE email = ?").bind(mail).first();
   if (exists) throw new HTTPException(409, { message: "An account with that email already exists" });
   const id = crypto.randomUUID();
-  await c.env.DB.prepare("INSERT INTO users (id, email, password_hash, created_at) VALUES (?, ?, ?, ?)")
-    .bind(id, mail, await hashPassword(String(password)), Date.now())
-    .run();
+  try {
+    await c.env.DB.prepare("INSERT INTO users (id, email, password_hash, created_at) VALUES (?, ?, ?, ?)")
+      .bind(id, mail, await hashPassword(String(password)), Date.now())
+      .run();
+  } catch (err) {
+    // Lost the SELECT-then-INSERT race against the UNIQUE(email) constraint.
+    if (/UNIQUE/i.test(String(err))) throw new HTTPException(409, { message: "An account with that email already exists" });
+    throw err;
+  }
   await startSession(c, id);
   return c.json({ user: { id, email: mail, default_provider: "openrouter", default_model: null } satisfies User });
 });
 
 app.post("/auth/login", async (c) => {
   const { email, password } = await json<{ email: string; password: string }>(c);
+  const mail = String(email ?? "").trim().toLowerCase();
+  await rateLimit(c, `login:${clientIp(c)}`, 30, 15 * 60_000);
+  await rateLimit(c, `login:${clientIp(c)}:${mail.slice(0, 254)}`, 8, 15 * 60_000);
   const row = await c.env.DB.prepare("SELECT id, email, password_hash, default_provider, default_model FROM users WHERE email = ?")
-    .bind(String(email ?? "").trim().toLowerCase())
+    .bind(mail)
     .first<User & { password_hash: string }>();
-  if (!row || !(await verifyPassword(String(password ?? ""), row.password_hash))) {
+  // Always run PBKDF2 (against a dummy hash when the account is missing) so timing doesn't reveal existence.
+  const valid = await verifyPassword(String(password ?? ""), row?.password_hash ?? DUMMY_HASH);
+  if (!row || !valid) {
     throw new HTTPException(401, { message: "Wrong email or password" });
   }
   await startSession(c, row.id);
@@ -94,8 +111,8 @@ app.get("/search", async (c) => {
     {
       q,
       category,
-      start: Number(c.req.query("start") ?? 0) || 0,
-      max: Number(c.req.query("max") ?? 20) || 20,
+      start: Math.max(0, Math.floor(Number(c.req.query("start") ?? 0)) || 0),
+      max: Math.min(50, Math.max(1, Math.floor(Number(c.req.query("max") ?? 20)) || 20)),
       sort: sort === "submittedDate" || sort === "lastUpdatedDate" ? sort : "relevance",
     },
     c.executionCtx,
@@ -121,10 +138,11 @@ app.get("/papers/:id/pdf", async (c) => {
   const id = arxivIdParam(c.req.param("id"));
   const res = await fetch(`https://arxiv.org/pdf/${id}`, {
     headers: { "user-agent": "LichPapers/0.1 (+https://github.com/moikapy/lich-papers)" },
-    cf: { cacheTtl: 86_400, cacheEverything: true },
+    cf: { cacheTtlByStatus: { "200-299": 86_400, "400-599": 0 }, cacheEverything: true },
   } as RequestInit).catch(() => {
     throw new HTTPException(502, { message: "arXiv is unreachable right now" });
   });
+  if (res.status === 404) throw new HTTPException(404, { message: "Paper not found on arXiv" });
   if (!res.ok || !res.body) throw new HTTPException(502, { message: `arXiv returned ${res.status}` });
   return new Response(res.body, {
     headers: {
@@ -228,25 +246,56 @@ async function transcript(env: Env, sessionId: string): Promise<{ role: "user" |
   return results;
 }
 
+/**
+ * Runs `run` with the shared-key quota reserved atomically up front, then settles the real
+ * number of shared calls afterwards, even when the run throws or is aborted.
+ */
+async function metered<T>(
+  env: Env,
+  userId: string,
+  providers: ProviderConfig[],
+  run: (providers: ProviderConfig[], counter: { sharedCalls: number }) => Promise<T>,
+): Promise<T> {
+  const usesShared = providers.some((p) => p.name === SHARED_PROVIDER);
+  const reserved = usesShared && (await reserveFreeUsage(env, userId));
+  let usable = providers;
+  if (usesShared && !reserved) {
+    usable = providers.filter((p) => p.name !== SHARED_PROVIDER);
+    if (!usable.length) {
+      throw new HTTPException(429, {
+        message: "You've used today's shared free messages. Connect your own OpenRouter account (free) in Settings to keep going.",
+      });
+    }
+  }
+  const counter = { sharedCalls: 0 };
+  try {
+    return await run(usable, counter);
+  } finally {
+    if (reserved) await adjustFreeUsage(env, userId, counter.sharedCalls - 1).catch((e) => console.warn("usage settle failed", e));
+  }
+}
+
 /** Summarizes a session into the knowledge base (used for "build on" and the explicit button). */
 async function summarizeSession(c: { env: Env; executionCtx: Ctx; req: { url: string } }, user: User, s: SessionRow): Promise<string | null> {
   const msgs = await transcript(c.env, s.id);
   if (!msgs.length) return null;
   const chain = await resolveChain(c.env, user, new URL(c.req.url).origin, {});
   const paper = await getPaper(c.env, s.arxiv_id, c.executionCtx);
-  const { text, sharedCalls } = await summarize(chain.providers, paper?.title ?? s.arxiv_id, msgs);
-  await recordFreeUsage(c.env, user.id, sharedCalls);
-  await c.env.DB.batch([
-    c.env.DB.prepare("UPDATE chat_sessions SET summary = ? WHERE id = ?").bind(text, s.id),
-    c.env.DB.prepare("DELETE FROM knowledge WHERE session_id = ? AND kind = 'summary'").bind(s.id),
-  ]);
-  await addKnowledge(c.env, user.id, {
+  const { text } = await metered(c.env, user.id, chain.providers, (providers, counter) =>
+    summarize(providers, paper?.title ?? s.arxiv_id, msgs, counter),
+  );
+  // Insert the replacement first, then drop older summaries, so a failure never loses the only copy.
+  const newId = await addKnowledge(c.env, user.id, {
     content: `Session "${s.title}" on ${paper?.title ?? s.arxiv_id}:\n${text}`,
     kind: "summary",
     session_id: s.id,
     arxiv_id: s.arxiv_id,
     tags: paper?.categories.join(", ") ?? "",
   });
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE chat_sessions SET summary = ? WHERE id = ?").bind(text, s.id),
+    c.env.DB.prepare("DELETE FROM knowledge WHERE session_id = ? AND kind = 'summary' AND id != ?").bind(s.id, newId),
+  ]);
   return text;
 }
 
@@ -365,16 +414,16 @@ app.post("/sessions/:id/messages", requireUser, async (c) => {
         if (p?.summary) buildsOn.push({ title: p.title, summary: p.summary });
       }
 
-      const result = await runChat({
-        providers: chain.providers,
+      const result = await metered(c.env, user.id, chain.providers, (providers, counter) => runChat({
+        providers,
+        counter,
         system: systemPrompt(paper, related.filter((r) => r.session_id !== s.id), buildsOn),
         tools: paperTools({ env: c.env, user, paper, sessionId: s.id, ctx: c.executionCtx }),
         history,
         input,
         signal: c.req.raw.signal,
         onEvent: (e) => void send(e.type, e),
-      });
-      await recordFreeUsage(c.env, user.id, result.sharedCalls);
+      }));
       if (result.stopped === "aborted") return;
 
       const now = Date.now();
@@ -396,7 +445,7 @@ app.post("/sessions/:id/messages", requireUser, async (c) => {
       await send("done", { content: result.content, meta });
     } catch (err) {
       console.error("chat failed", err);
-      const message = err instanceof HTTPException ? err.message : err instanceof Error ? err.message : "Chat failed";
+      const message = err instanceof HTTPException ? err.message : safeProviderMessage(err);
       await send("error", { message: `The model request failed: ${message}` });
     }
   });

@@ -4,6 +4,16 @@ import { useAuth } from "../auth";
 import { Link } from "../components/Link";
 import { navigate } from "../router";
 
+/** Same-origin path only; anything else (e.g. //host, /\\host) falls back to the home page. */
+function safeNext(n: string): string {
+  try {
+    const u = new URL(n, location.origin);
+    return u.origin === location.origin && n.startsWith("/") ? u.pathname + u.search + u.hash : "/";
+  } catch {
+    return "/";
+  }
+}
+
 export function AuthPage({ mode }: { mode: "login" | "signup" }) {
   const { setUser } = useAuth();
   const [email, setEmail] = useState("");
@@ -18,8 +28,11 @@ export function AuthPage({ mode }: { mode: "login" | "signup" }) {
     setError(null);
     try {
       const r = await api<{ user: User }>(`/auth/${mode}`, { method: "POST", json: { email, password } });
+      try {
+        localStorage.removeItem("lp_model");
+      } catch {}
       setUser(r.user);
-      navigate(next.startsWith("/") ? next : "/");
+      navigate(safeNext(next));
     } catch (err) {
       setError((err as Error).message);
     } finally {

@@ -55,8 +55,8 @@ export function PaperPage({ arxivId, sessionId }: { arxivId: string; sessionId: 
         </div>
       </div>
       <div className={`panes show-${mobilePane}`}>
-        <Reader paper={paper} onQuote={quote} />
-        <ChatPanel paper={paper} sessionId={sessionId} draft={draft} setDraft={setDraft} />
+        <Reader key={paper.arxiv_id} paper={paper} onQuote={quote} />
+        <ChatPanel key={paper.arxiv_id} paper={paper} sessionId={sessionId} draft={draft} setDraft={setDraft} />
       </div>
     </div>
   );
@@ -68,15 +68,23 @@ function Reader({ paper, onQuote }: { paper: PaperMeta; onQuote: (t: string) => 
   const [loadingText, setLoadingText] = useState(false);
   const [textError, setTextError] = useState<string | null>(null);
   const [selection, setSelection] = useState("");
+  const [attempt, setAttempt] = useState(0);
 
+  // Reader is keyed by arxiv id, so text/textError start fresh for each paper. `attempt` drives Retry.
   useEffect(() => {
-    if (tab !== "text" || text || loadingText) return;
+    if (tab !== "text" || text || textError) return;
+    let cancelled = false;
     setLoadingText(true);
+    setTextError(null);
     api<{ body: string; source: string }>(`/papers/${enc(paper.arxiv_id)}/text`)
-      .then(setText)
-      .catch((e) => setTextError((e as Error).message))
-      .finally(() => setLoadingText(false));
-  }, [tab, text, loadingText, paper.arxiv_id]);
+      .then((t) => !cancelled && setText(t))
+      .catch((e) => !cancelled && setTextError((e as Error).message))
+      .finally(() => !cancelled && setLoadingText(false));
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, paper.arxiv_id, attempt]);
 
   const captureSelection = () => setSelection(window.getSelection()?.toString().trim() ?? "");
 
@@ -107,7 +115,20 @@ function Reader({ paper, onQuote }: { paper: PaperMeta; onQuote: (t: string) => 
       ) : (
         <div className="paper-text" onMouseUp={captureSelection} onTouchEnd={captureSelection}>
           {loadingText && <p className="muted">Extracting full text (first time can take a few seconds)…</p>}
-          {textError && <p className="error">{textError}</p>}
+          {textError && (
+            <p className="error">
+              {textError}{" "}
+              <button
+                className="small"
+                onClick={() => {
+                  setTextError(null);
+                  setAttempt((n) => n + 1);
+                }}
+              >
+                Retry
+              </button>
+            </p>
+          )}
           {text && (
             <>
               <p className="muted small">
@@ -154,7 +175,11 @@ function useModelChoice(): [ModelChoice | null, (c: ModelChoice) => void, Partia
   useEffect(() => {
     if (!user) return;
     api<{ providers: Record<ProviderId, { connected: boolean }> }>("/settings")
-      .then((s) => setProviders(s.providers))
+      .then((s) => {
+        setProviders(s.providers);
+        // A saved choice for a provider that is no longer connected falls back to OpenRouter.
+        setChoice((c) => (c && c.provider !== "openrouter" && !s.providers[c.provider]?.connected ? { provider: "openrouter", model: "" } : c));
+      })
       .catch(() => {});
     let saved: ModelChoice | null = null;
     try {
@@ -179,7 +204,7 @@ function ModelPicker({ choice, onChange, providers }: { choice: ModelChoice; onC
       .then((r) => setModels(r.models))
       .catch(() => setModels([]));
   }, [choice.provider]);
-  const available = (Object.keys(PROVIDER_LABELS) as ProviderId[]).filter((p) => p === "openrouter" || providers[p]?.connected);
+  const available = (Object.keys(PROVIDER_LABELS) as ProviderId[]).filter((p) => p === "openrouter" || providers[p]?.connected || p === choice.provider);
   const listId = `models-${choice.provider}`;
   return (
     <div className="model-picker">
@@ -187,6 +212,7 @@ function ModelPicker({ choice, onChange, providers }: { choice: ModelChoice; onC
         {available.map((p) => (
           <option key={p} value={p}>
             {PROVIDER_LABELS[p]}
+            {p !== "openrouter" && !providers[p]?.connected ? " (not connected)" : ""}
           </option>
         ))}
       </select>
@@ -219,7 +245,10 @@ function ChatPanel({ paper, sessionId, draft, setDraft }: { paper: PaperMeta; se
   const [showNew, setShowNew] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [choice, setChoice, providers] = useModelChoice();
+  const [loadingSession, setLoadingSession] = useState(false);
   const abort = useRef<AbortController | null>(null);
+  const sending = useRef(false);
+  const activeId = useRef<string | null>(sessionId);
   const bottom = useRef<HTMLDivElement>(null);
 
   const refreshSessions = useCallback(() => {
@@ -235,22 +264,37 @@ function ChatPanel({ paper, sessionId, draft, setDraft }: { paper: PaperMeta; se
   }, [refreshSessions]);
 
   useEffect(() => {
+    activeId.current = sessionId;
+    abort.current?.abort();
+    setSession(null);
+    setMessages([]);
+    setError(null);
     if (!user || !sessionId) {
-      setSession(null);
-      setMessages([]);
+      setLoadingSession(false);
       return;
     }
+    let cancelled = false;
+    setLoadingSession(true);
     api<{ session: Session; messages: ChatMessage[] }>(`/sessions/${sessionId}`)
       .then((r) => {
+        if (cancelled) return;
         setSession(r.session);
         setMessages(r.messages);
       })
-      .catch((e) => setError((e as Error).message));
+      .catch((e) => !cancelled && setError((e as Error).message))
+      .finally(() => !cancelled && setLoadingSession(false));
+    return () => {
+      cancelled = true;
+    };
   }, [user, sessionId]);
+
+  useEffect(() => () => abort.current?.abort(), []);
 
   useEffect(() => bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" }), [messages, pending]);
 
   const openSession = (id: string | null) => {
+    abort.current?.abort();
+    activeId.current = id;
     if (!id) {
       setSession(null);
       setMessages([]);
@@ -258,66 +302,77 @@ function ChatPanel({ paper, sessionId, draft, setDraft }: { paper: PaperMeta; se
     navigate(`/paper/${enc(paper.arxiv_id)}${id ? `?session=${id}` : ""}`, true);
   };
 
-  const send = async (text: string) => {
+  const send = async (text: string, fromDraft = false) => {
     const content = text.trim();
-    if (!content || pending) return;
+    if (!content || pending || sending.current || loadingSession) return;
+    sending.current = true;
     setError(null);
-    let s = session;
-    if (!s) {
-      try {
-        s = (await api<{ session: Session }>("/sessions", { method: "POST", json: { arxiv_id: paper.arxiv_id } })).session;
-      } catch (e) {
-        setError((e as Error).message);
-        return;
-      }
-      setSession(s);
-      history.replaceState(null, "", `/paper/${enc(paper.arxiv_id)}?session=${s.id}`);
-    }
-    const userMsg: ChatMessage = { id: `local-${Date.now()}`, role: "user", content, meta: null, created_at: Date.now() };
-    setMessages((m) => [...m, userMsg]);
-    setDraft("");
     setPending({ status: "Sending…", tools: [] });
-    const ac = new AbortController();
-    abort.current = ac;
-    let finished = false;
     try {
-      await postStream(
-        `/sessions/${s.id}/messages`,
-        { content, provider: choice?.provider, model: choice?.model || undefined },
-        (event, data) => {
-          if (event === "status") setPending((p) => p && { ...p, status: data.text });
-          else if (event === "tool_start") setPending((p) => p && { ...p, status: `${toolLabel(data)}…`, tools: [...p.tools, { name: data.name, args: data.args }] });
-          else if (event === "tool_end")
-            setPending((p) => {
-              if (!p) return p;
-              const tools = [...p.tools];
-              const i = tools.map((t) => t.name).lastIndexOf(data.name);
-              if (i >= 0) tools[i] = { ...tools[i]!, ok: data.ok };
-              return { ...p, tools };
-            });
-          else if (event === "provider_error") setPending((p) => p && { ...p, status: `${data.provider} failed, trying fallback…` });
-          else if (event === "done") {
-            finished = true;
-            setMessages((m) => [...m, { id: `local-${Date.now()}-a`, role: "assistant", content: data.content, meta: data.meta, created_at: Date.now() }]);
-          } else if (event === "error") {
-            finished = true;
-            throw new Error(data.message);
-          }
-        },
-        ac.signal,
-      );
-      if (!finished && !ac.signal.aborted) throw new Error("The connection closed before an answer arrived.");
-    } catch (e) {
-      if (!ac.signal.aborted) {
-        setError((e as Error).message);
-        // Server persists nothing on failure; drop the optimistic message and restore the draft.
+      let s = session;
+      if (!s) {
+        const startId = activeId.current;
+        try {
+          s = (await api<{ session: Session }>("/sessions", { method: "POST", json: { arxiv_id: paper.arxiv_id } })).session;
+        } catch (e) {
+          setError((e as Error).message);
+          setPending(null);
+          return;
+        }
+        if (activeId.current !== startId) {
+          setPending(null);
+          return;
+        }
+        activeId.current = s.id;
+        setSession(s);
+        history.replaceState(null, "", `/paper/${enc(paper.arxiv_id)}?session=${s.id}`);
+      }
+      const sid = s.id;
+      const live = () => activeId.current === sid;
+      const userMsg: ChatMessage = { id: `local-${Date.now()}`, role: "user", content, meta: null, created_at: Date.now() };
+      setMessages((m) => [...m, userMsg]);
+      if (fromDraft) setDraft("");
+      const ac = new AbortController();
+      abort.current = ac;
+      let finished = false;
+      try {
+        await postStream(
+          `/sessions/${sid}/messages`,
+          { content, provider: choice?.provider, model: choice?.model || undefined },
+          (event, data) => {
+            if (!live()) return;
+            if (event === "status") setPending((p) => p && { ...p, status: data.text });
+            else if (event === "tool_start") setPending((p) => p && { ...p, status: `${toolLabel(data)}…`, tools: [...p.tools, { name: data.name, args: data.args }] });
+            else if (event === "tool_end")
+              setPending((p) => {
+                if (!p) return p;
+                const tools = [...p.tools];
+                const i = tools.map((t) => t.name).lastIndexOf(data.name);
+                if (i >= 0) tools[i] = { ...tools[i]!, ok: data.ok };
+                return { ...p, tools };
+              });
+            else if (event === "provider_error") setPending((p) => p && { ...p, status: `${data.provider} failed, trying fallback…` });
+            else if (event === "done") {
+              finished = true;
+              setMessages((m) => [...m, { id: `local-${Date.now()}-a`, role: "assistant", content: data.content, meta: data.meta, created_at: Date.now() }]);
+            } else if (event === "error") {
+              finished = true;
+              throw new Error(data.message);
+            }
+          },
+          ac.signal,
+        );
+        if (!finished && !ac.signal.aborted) throw new Error("The connection closed before an answer arrived.");
+      } catch (e) {
+        // Server persists nothing on failure or abort; drop the optimistic message and restore the draft.
         setMessages((m) => m.filter((x) => x !== userMsg));
-        setDraft(content);
-      } else {
-        setMessages((m) => m.filter((x) => x !== userMsg));
-        setDraft(content);
+        if (live()) {
+          if (!ac.signal.aborted) setError((e as Error).message);
+          if (fromDraft) setDraft((d) => d || content);
+        }
       }
     } finally {
+      sending.current = false;
       setPending(null);
       abort.current = null;
       refreshSessions().catch(() => {});
@@ -358,7 +413,7 @@ function ChatPanel({ paper, sessionId, draft, setDraft }: { paper: PaperMeta; se
   return (
     <section className="chat">
       <div className="toolbar">
-        <select value={session?.id ?? ""} onChange={(e) => openSession(e.target.value || null)} aria-label="Session">
+        <select value={session?.id ?? ""} onChange={(e) => openSession(e.target.value || null)} aria-label="Session" disabled={!!pending || loadingSession}>
           <option value="">{session ? "— new conversation —" : "New conversation"}</option>
           {sessions.map((s) => (
             <option key={s.id} value={s.id}>
@@ -366,7 +421,7 @@ function ChatPanel({ paper, sessionId, draft, setDraft }: { paper: PaperMeta; se
             </option>
           ))}
         </select>
-        <button className="small" onClick={() => setShowNew(true)} title="Start a new conversation, optionally building on earlier ones">
+        <button className="small" onClick={() => setShowNew(true)} disabled={!!pending || loadingSession} title="Start a new conversation, optionally building on earlier ones">
           + New
         </button>
         {session && messages.length > 1 && (
@@ -389,17 +444,17 @@ function ChatPanel({ paper, sessionId, draft, setDraft }: { paper: PaperMeta; se
       )}
       {session && session.builds_on.length > 0 && <p className="muted small builds">Builds on {session.builds_on.length} earlier session(s).</p>}
       {notice && (
-        <p className="notice" onClick={() => setNotice(null)}>
+        <p className="notice" role="button" tabIndex={0} onClick={() => setNotice(null)} onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setNotice(null)}>
           {notice}
         </p>
       )}
 
-      <div className="messages">
-        {messages.length === 0 && !pending && (
+      <div className="messages" aria-live="polite">
+        {messages.length === 0 && !pending && !loadingSession && (
           <div className="starters">
             <p className="muted">Ask anything about this paper. Some ideas:</p>
             {STARTERS.map((s) => (
-              <button key={s} className="starter" onClick={() => send(s)}>
+              <button key={s} className="starter" onClick={() => send(s)} disabled={!!pending || loadingSession}>
                 {s}
               </button>
             ))}
@@ -428,7 +483,7 @@ function ChatPanel({ paper, sessionId, draft, setDraft }: { paper: PaperMeta; se
         className="composer"
         onSubmit={(e) => {
           e.preventDefault();
-          send(draft);
+          send(draft, true);
         }}
       >
         <textarea
@@ -437,7 +492,7 @@ function ChatPanel({ paper, sessionId, draft, setDraft }: { paper: PaperMeta; se
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
-              send(draft);
+              send(draft, true);
             }
           }}
           placeholder="Ask about this paper… (Shift+Enter for a new line)"

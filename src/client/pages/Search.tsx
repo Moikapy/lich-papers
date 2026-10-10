@@ -34,16 +34,21 @@ export function SearchPage() {
   useEffect(() => {
     if (!q && !cat) {
       setData(null);
+      setLoading(false);
       return;
     }
+    let cancelled = false;
     const params = new URLSearchParams({ q, sort, start: String(start), max: String(PAGE) });
     if (cat) params.set("category", cat);
     setLoading(true);
     setError(null);
     api<{ total: number; papers: PaperMeta[] }>(`/search?${params}`)
-      .then(setData)
-      .catch((e) => setError((e as Error).message))
-      .finally(() => setLoading(false));
+      .then((d) => !cancelled && setData(d))
+      .catch((e) => !cancelled && setError((e as Error).message))
+      .finally(() => !cancelled && setLoading(false));
+    return () => {
+      cancelled = true;
+    };
   }, [q, cat, sort, start]);
 
   const go = (patch: Record<string, string | null>) => {

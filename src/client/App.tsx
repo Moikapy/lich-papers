@@ -35,7 +35,12 @@ export function App() {
   else page = <SearchPage />;
 
   const logout = async () => {
-    await api("/auth/logout", { method: "POST" });
+    try {
+      await api("/auth/logout", { method: "POST" });
+    } catch {}
+    try {
+      localStorage.removeItem("lp_model");
+    } catch {}
     setUser(null);
     navigate("/");
   };

@@ -37,8 +37,12 @@ export function KnowledgePage() {
   };
 
   const remove = async (id: number) => {
-    await api(`/knowledge/${id}`, { method: "DELETE" });
-    setEntries((all) => all?.filter((x) => x.id !== id) ?? null);
+    try {
+      await api(`/knowledge/${id}`, { method: "DELETE" });
+      setEntries((all) => all?.filter((x) => x.id !== id) ?? null);
+    } catch (err) {
+      setError((err as Error).message);
+    }
   };
 
   return (

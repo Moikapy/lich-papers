@@ -109,7 +109,7 @@ label.inline { display: flex; gap: 0.4rem; align-items: center; }
 details summary { cursor: pointer; font-weight: 600; }
 
 /* paper */
-.paper { display: flex; flex-direction: column; height: calc(100vh - 53px); }
+.paper { display: flex; flex-direction: column; height: calc(100vh - 53px); height: calc(100dvh - 53px); }
 .paper-head { padding: 0.9rem 1.25rem 0.6rem; border-bottom: 1px solid var(--border); }
 .paper-head h1 { font-size: 1.25rem; margin: 0; }
 .paper-head .byline { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

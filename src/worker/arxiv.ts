@@ -43,7 +43,10 @@ const URL_ID = new RegExp(`arxiv\\.org/(?:abs|pdf|html)/${ID}`, "i");
 /** Extracts a version-less arXiv id from a bare id, "arXiv:" reference, or abs/pdf/html URL. */
 export function parseArxivId(input: string): string | null {
   const s = input.trim();
-  return (s.match(BARE_ID) ?? s.match(URL_ID))?.[1] ?? null;
+  const id = (s.match(BARE_ID) ?? s.match(URL_ID))?.[1];
+  if (!id) return null;
+  // Old-style ids are canonically "archive.CLASS/NNNNNNN" (lowercase archive, uppercase subject class).
+  return id.replace(/^([a-z-]+)(?:\.([a-z]{2}))?\//i, (_, a: string, c?: string) => `${a.toLowerCase()}${c ? "." + c.toUpperCase() : ""}/`);
 }
 
 /** Turns free text into an arXiv API search_query. Field-prefixed queries pass through. */
@@ -54,7 +57,7 @@ export function buildSearchQuery(q: string, category?: string): string {
     query = trimmed;
   } else {
     const phrases = [...trimmed.matchAll(/"([^"]+)"|(\S+)/g)].map((m) =>
-      m[1] ? `all:"${m[1]}"` : `all:${m[2]!.replace(/[():]/g, "")}`,
+      m[1] ? `all:"${m[1]}"` : `all:${m[2]!.replace(/["():]/g, "")}`,
     );
     query = phrases.filter((p) => p !== "all:").join(" AND ");
   }
@@ -179,7 +182,7 @@ export async function getPaperWithBody(env: Env, id: string, ctx?: Ctx): Promise
   const row = await env.DB.prepare("SELECT body, body_source FROM papers WHERE arxiv_id = ?")
     .bind(id)
     .first<{ body: string | null; body_source: Paper["body_source"] }>();
-  if (row?.body) return { ...meta, body: row.body, body_source: row.body_source };
+  if (row?.body && row.body_source !== "abstract") return { ...meta, body: row.body, body_source: row.body_source };
 
   let body: string | null = null;
   let source: Paper["body_source"] = "abstract";
@@ -198,8 +201,8 @@ export async function getPaperWithBody(env: Env, id: string, ctx?: Ctx): Promise
     }
   }
   if (!body) {
-    body = meta.abstract;
-    source = "abstract";
+    // Don't persist the fallback: a transient arXiv failure must not pin the abstract forever.
+    return { ...meta, body: meta.abstract, body_source: "abstract" };
   }
   body = body.slice(0, MAX_BODY_CHARS);
   await env.DB.prepare("UPDATE papers SET body = ?, body_source = ? WHERE arxiv_id = ?").bind(body, source, id).run();

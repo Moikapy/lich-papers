@@ -83,3 +83,13 @@ describe("decodeEntities", () => {
     expect(decodeEntities("a &amp; b &lt;c&gt; &#955; &#x3bb; &nbsp;")).toBe("a & b <c> λ λ  ");
   });
 });
+
+describe("arxiv id and query edge cases", () => {
+  it("normalizes case of old-style ids", () => {
+    expect(parseArxivId("math.gt/0309136")).toBe("math.GT/0309136");
+    expect(parseArxivId("HEP-TH/9901001v2")).toBe("hep-th/9901001");
+  });
+  it("strips a lone quote from free-text tokens", () => {
+    expect(buildSearchQuery('"deep learning')).toBe("all:deep AND all:learning");
+  });
+});
