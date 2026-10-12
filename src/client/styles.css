@@ -180,3 +180,10 @@ details summary { cursor: pointer; font-weight: 600; }
   .topbar { padding: 0.5rem 0.75rem; }
   .main { padding: 1rem 0.9rem 3rem; }
 }
+
+/* plan */
+.features { margin: 0.25rem 0 0.75rem; padding-left: 1.2rem; }
+.features li { margin: 0.15rem 0; }
+.meter { height: 8px; background: var(--accent-soft); border-radius: 999px; overflow: hidden; margin: 0.25rem 0 0.5rem; }
+.meter span { display: block; height: 100%; background: var(--accent); }
+.topbar nav a.go-pro { color: var(--accent); font-weight: 600; }

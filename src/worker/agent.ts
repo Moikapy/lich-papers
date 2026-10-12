@@ -2,11 +2,21 @@ import { Agent, parse_agent_config, type Message, type ProviderConfig, type Tool
 import type { Paper } from "./arxiv";
 import { searchArxiv, getPaper } from "./arxiv";
 import type { Ctx, Env, User } from "./env";
-import { addKnowledge, formatKnowledge, searchKnowledge, type KnowledgeRow } from "./knowledge";
+import { addKnowledge, assertCanAddNote, formatKnowledge, NoteLimitError, searchKnowledge, type KnowledgeRow } from "./knowledge";
 import { chunkText, outline, readRange, readSection, searchChunks } from "./paper-text";
 import { SHARED_PROVIDER } from "./providers";
 
 const EXCERPT_CHARS = 8000;
+
+/**
+ * Prompt budgets. "lean" is used when the app pays for the model (Pro key, free trial):
+ * a shorter excerpt and fewer tool steps cut tokens per message by roughly a third to a half.
+ */
+export const BUDGETS = {
+  full: { excerptChars: EXCERPT_CHARS, maxTurns: 8 },
+  lean: { excerptChars: 4000, maxTurns: 5 },
+} as const;
+export type Budget = keyof typeof BUDGETS;
 
 /** A transcript sink that never touches the filesystem (Workers has no persistent disk). */
 const memorySession = () => ({ id: crypto.randomUUID(), path: "memory", append: async () => {} });
@@ -101,6 +111,12 @@ export function paperTools({ env, user, paper, sessionId, ctx }: ToolEnv): Tool[
       async execute(args) {
         const content = str(args.content).trim();
         if (!content) return fail("content is empty");
+        try {
+          await assertCanAddNote(env, user);
+        } catch (e) {
+          if (e instanceof NoteLimitError) return fail(e.message);
+          throw e;
+        }
         const id = await addKnowledge(env, user.id, { content, tags: str(args.tags), session_id: sessionId, arxiv_id: paper.arxiv_id });
         return ok(`Saved as note #${id}.`);
       },
@@ -136,11 +152,17 @@ export function paperTools({ env, user, paper, sessionId, ctx }: ToolEnv): Tool[
   ];
 }
 
-export function systemPrompt(paper: Paper & { body: string }, related: KnowledgeRow[], buildsOn: { title: string; summary: string }[]): string {
+export function systemPrompt(
+  paper: Paper & { body: string },
+  related: KnowledgeRow[],
+  buildsOn: { title: string; summary: string }[],
+  budget: Budget = "full",
+): string {
+  const excerptChars = BUDGETS[budget].excerptChars;
   const heads = outline(paper.body);
   const abstractIdx = paper.body.indexOf(paper.abstract.slice(0, 60));
   const excerptStart = abstractIdx >= 0 ? abstractIdx : 0;
-  const excerpt = paper.body.slice(excerptStart, excerptStart + EXCERPT_CHARS);
+  const excerpt = paper.body.slice(excerptStart, excerptStart + excerptChars);
   const parts = [
     `You are Lich Papers, a patient research tutor. You help the user read and understand the arXiv paper below and answer their questions about it.`,
     `## Paper
@@ -154,7 +176,7 @@ Full text: ${paper.body.length} characters, extracted from ${paper.body_source}.
     `## Opening excerpt
 <untrusted_paper_text>
 ${excerpt}
-</untrusted_paper_text>${paper.body.length > excerptStart + EXCERPT_CHARS ? "\n[… use search_paper / read_paper for the rest]" : ""}`,
+</untrusted_paper_text>${paper.body.length > excerptStart + excerptChars ? "\n[… use search_paper / read_paper for the rest]" : ""}`,
   ];
   if (buildsOn.length) {
     parts.push(
@@ -204,12 +226,12 @@ export interface RunResult {
   stopped: "final" | "budget" | "aborted";
 }
 
-function buildAgent(providers: ProviderConfig[], system_prompt: string, tools: Tool[]): Agent {
+function buildAgent(providers: ProviderConfig[], system_prompt: string, tools: Tool[], maxTurns: number): Agent {
   const config = parse_agent_config({
     providers,
     system_prompt,
     tools_enabled: [],
-    max_turns: 8,
+    max_turns: maxTurns,
     context_budget_tokens: 48_000,
     log_level: "warn",
     work_dir: "/tmp",
@@ -244,8 +266,9 @@ export async function runChat(opts: {
   onEvent?: (e: StreamEvent) => void;
   /** Updated live so callers can still account for shared-key calls when the run throws. */
   counter?: { sharedCalls: number };
+  budget?: Budget;
 }): Promise<RunResult> {
-  const agent = buildAgent(opts.providers, opts.system, opts.tools);
+  const agent = buildAgent(opts.providers, opts.system, opts.tools, BUDGETS[opts.budget ?? "full"].maxTurns);
   const tools: RunResult["tools"] = [];
   let sharedCalls = 0;
   const off = agent.events.on((e) => {

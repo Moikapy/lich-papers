@@ -65,6 +65,12 @@ export function App() {
           {user && navLink("/sessions", "History")}
           {user && navLink("/knowledge", "Knowledge")}
           {user && navLink("/settings", "Settings")}
+          {user?.plan === "free" && (
+            <Link href="/settings" className="go-pro">
+              Go Pro
+            </Link>
+          )}
+          {user?.plan === "pro" && <span className="tag">Pro</span>}
           {!loading && !user && navLink("/login", "Sign in")}
           {user && (
             <button className="linklike" onClick={logout} title={user.email}>

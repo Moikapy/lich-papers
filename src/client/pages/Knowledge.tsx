@@ -48,10 +48,21 @@ export function KnowledgePage() {
   return (
     <RequireAuth>
       <div className="list-page">
-        <h1>Knowledge base</h1>
+        <div className="row spread">
+          <h1>Knowledge base</h1>
+          {user?.plan === "pro" ? (
+            <a className="button small" href="/api/knowledge/export" download>
+              Export Markdown
+            </a>
+          ) : (
+            <Link className="button small" href="/settings" title="Exporting is a Pro feature">
+              Export (Pro)
+            </Link>
+          )}
+        </div>
         <p className="muted">
           Notes the tutor saved for you and summaries of past sessions. Every new conversation can search these, so what you learn on one paper
-          carries over to the next.
+          carries over to the next.{user?.plan !== "pro" && " The free plan keeps up to 100 notes."}
         </p>
         <form
           className="searchbar"
