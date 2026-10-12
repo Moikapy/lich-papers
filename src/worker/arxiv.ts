@@ -343,15 +343,21 @@ export function decodeEntities(s: string): string {
   });
 }
 
+/** Stands in for list-item indentation until whitespace is collapsed. */
+const INDENT = "\u0001";
+
 /**
- * Converts an arXiv (LaTeXML) HTML page to plain text with "## " heading
- * markers and inline $math$ taken from alttext.
+ * Converts an arXiv (LaTeXML) HTML page to markdown-ish text: "## " heading markers,
+ * "- " / "1. " list items and inline $math$ taken from alttext.
  */
 async function htmlToText(res: Response): Promise<string> {
   const out: string[] = [];
   let inArticle = 0;
   let skip = 0;
-  const block = () => out.push("\n");
+  const lists: ("ul" | "ol")[] = [];
+  let inItem = 0;
+  // Paragraphs inside a list item stay on the item's line so the marker isn't orphaned.
+  const block = () => out.push(inItem ? " " : "\n");
   const rewriter = new HTMLRewriter()
     .on("article", {
       element(el) {
@@ -359,7 +365,7 @@ async function htmlToText(res: Response): Promise<string> {
         el.onEndTag(() => void inArticle--);
       },
     })
-    .on("script, style, nav, footer, header, .ltx_page_footer, .ltx_role_footnote .ltx_tag", {
+    .on("script, style, nav, footer, header, .ltx_page_footer, .ltx_role_footnote .ltx_tag, .ltx_tag_item", {
       element(el) {
         skip++;
         el.onEndTag(() => void skip--);
@@ -380,7 +386,29 @@ async function htmlToText(res: Response): Promise<string> {
         el.onEndTag(() => void out.push("\n"));
       },
     })
-    .on("p, div, li, figcaption, tr, section, blockquote, .ltx_bibitem", {
+    .on("ul, ol", {
+      element(el) {
+        if (!inArticle) return;
+        lists.push(el.tagName === "ol" ? "ol" : "ul");
+        el.onEndTag(() => {
+          lists.pop();
+          out.push("\n\n");
+        });
+      },
+    })
+    .on("li", {
+      element(el) {
+        if (!inArticle) return;
+        const depth = Math.max(lists.length, 1);
+        out.push(`\n\n${INDENT.repeat(depth - 1)}${lists[depth - 1] === "ol" ? "1. " : "- "}`);
+        inItem++;
+        el.onEndTag(() => {
+          inItem--;
+          out.push("\n");
+        });
+      },
+    })
+    .on("p, div, figcaption, tr, section, blockquote, .ltx_bibitem", {
       element(el) {
         if (!inArticle) return;
         block();
@@ -397,5 +425,6 @@ async function htmlToText(res: Response): Promise<string> {
     .replace(/[ \t ]+/g, " ")
     .replace(/ *\n */g, "\n")
     .replace(/\n{3,}/g, "\n\n")
+    .replaceAll(INDENT, "   ")
     .trim();
 }
