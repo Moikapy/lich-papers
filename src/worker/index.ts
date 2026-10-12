@@ -5,9 +5,10 @@ import type { Message, ProviderConfig } from "@moikapy/lich";
 import { clientIp, endSession, loadUser, currentUser, rateLimit, requireUser, sameOrigin, startSession } from "./auth";
 import { getPaper, getPaperWithBody, parseArxivId, searchArxiv, type Paper } from "./arxiv";
 import { hashPassword, verifyPassword } from "./crypto";
-import { PROVIDERS, type AppEnv, type Ctx, type Env, type ProviderId, type User } from "./env";
-import { addKnowledge, listKnowledge, searchKnowledge } from "./knowledge";
-import { paperTools, runChat, safeProviderMessage, summarize, systemPrompt } from "./agent";
+import { isPro, PROVIDERS, type AppEnv, type ChatProvider, type Ctx, type Env, type ProviderId, type User } from "./env";
+import { addKnowledge, assertCanAddNote, listKnowledge, NoteLimitError, searchKnowledge } from "./knowledge";
+import { paperTools, runChat, safeProviderMessage, summarize, systemPrompt, type Budget } from "./agent";
+import { applyComp, loadProKey, proAllowance, proCapUsd, stripe, syncSubscription, verifyStripeSignature, type StripeSubscription } from "./billing";
 import {
   exchangeOpenRouterCode,
   freeUsageRemaining,
@@ -17,7 +18,10 @@ import {
   adjustFreeUsage,
   reserveFreeUsage,
   resolveChain,
+  billedTo,
+  PRO_PROVIDER,
   SHARED_PROVIDER,
+  trialLimit,
   saveKey,
   validateBaseUrl,
 } from "./providers";
@@ -44,6 +48,12 @@ const json = async <T>(c: { req: { json: () => Promise<unknown> } }): Promise<Pa
 };
 
 const isProvider = (p: unknown): p is ProviderId => PROVIDERS.includes(p as ProviderId);
+const isChatProvider = (p: unknown): p is ChatProvider => p === "pro" || isProvider(p);
+
+/** "Build on" sessions per new conversation. */
+const BUILDS_ON_LIMIT = { free: 1, pro: 5 } as const;
+
+const billingEnabled = (env: Env) => !!(env.STRIPE_SECRET_KEY && env.STRIPE_WEBHOOK_SECRET && env.OPENROUTER_PROVISIONING_KEY);
 
 function arxivIdParam(raw: string): string {
   const id = parseArxivId(raw);
@@ -53,7 +63,23 @@ function arxivIdParam(raw: string): string {
 
 // ---------------------------------------------------------------- auth
 
-app.get("/me", (c) => c.json({ user: c.get("user") }));
+app.get("/me", async (c) => {
+  const user = c.get("user");
+  if (!user) return c.json({ user: null });
+  // Complimentary Pro (COMP_PRO_USER_IDS) is applied here, on app load. Failures never block sign-in.
+  if (c.env.COMP_PRO_USER_IDS || user.plan === "pro") {
+    try {
+      const plan = await applyComp(c.env, user);
+      if (plan !== user.plan) {
+        const fresh = await c.env.DB.prepare("SELECT id, email, default_provider, default_model, plan FROM users WHERE id = ?").bind(user.id).first<User>();
+        return c.json({ user: fresh ?? user });
+      }
+    } catch (err) {
+      console.error("comp check failed", err);
+    }
+  }
+  return c.json({ user });
+});
 
 app.post("/auth/signup", async (c) => {
   const { email, password } = await json<{ email: string; password: string }>(c);
@@ -74,7 +100,7 @@ app.post("/auth/signup", async (c) => {
     throw err;
   }
   await startSession(c, id);
-  return c.json({ user: { id, email: mail, default_provider: "openrouter", default_model: null } satisfies User });
+  return c.json({ user: { id, email: mail, default_provider: "openrouter", default_model: null, plan: "free" } satisfies User });
 });
 
 app.post("/auth/login", async (c) => {
@@ -82,7 +108,7 @@ app.post("/auth/login", async (c) => {
   const mail = String(email ?? "").trim().toLowerCase();
   await rateLimit(c, `login:${clientIp(c)}`, 30, 15 * 60_000);
   await rateLimit(c, `login:${clientIp(c)}:${mail.slice(0, 254)}`, 8, 15 * 60_000);
-  const row = await c.env.DB.prepare("SELECT id, email, password_hash, default_provider, default_model FROM users WHERE email = ?")
+  const row = await c.env.DB.prepare("SELECT id, email, password_hash, default_provider, default_model, plan FROM users WHERE email = ?")
     .bind(mail)
     .first<User & { password_hash: string }>();
   // Always run PBKDF2 (against a dummy hash when the account is missing) so timing doesn't reveal existence.
@@ -170,14 +196,28 @@ app.get("/settings", requireUser, async (c) => {
     }),
   );
   const orKey = keys.get("openrouter")?.api_key;
+  const plan = await c.env.DB.prepare("SELECT plan, plan_status, plan_renews_at, stripe_customer_id FROM users WHERE id = ?")
+    .bind(user.id)
+    .first<{ plan: string; plan_status: string | null; plan_renews_at: number | null; stripe_customer_id: string | null }>();
+  const proKey = isPro(user) ? await loadProKey(c.env, user.id) : null;
   return c.json({
     default_provider: user.default_provider,
     default_model: user.default_model,
     providers,
     openrouter_credits: orKey ? await openRouterCredits(orKey) : null,
-    shared_free: c.env.OPENROUTER_API_KEY
-      ? { remaining_today: Math.max(0, await freeUsageRemaining(c.env, user.id)), limit: Number(c.env.FREE_DAILY_LIMIT ?? 50) }
+    trial: c.env.OPENROUTER_API_KEY && !orKey && !isPro(user)
+      ? { remaining: Math.max(0, await freeUsageRemaining(c.env, user.id)), limit: trialLimit(c.env) }
       : null,
+    plan: {
+      plan: plan?.plan ?? "free",
+      status: plan?.plan_status ?? null,
+      renews_at: plan?.plan_renews_at ?? null,
+      has_billing_account: !!plan?.stripe_customer_id,
+      price_cents: Number(c.env.PRO_PRICE_CENTS ?? 1000),
+      monthly_cap_usd: proCapUsd(c.env),
+      allowance: proKey ? await proAllowance(proKey) : null,
+      billing_enabled: billingEnabled(c.env),
+    },
   });
 });
 
@@ -207,7 +247,8 @@ app.post("/settings/openrouter/exchange", requireUser, async (c) => {
 
 app.put("/settings/default", requireUser, async (c) => {
   const { provider, model } = await json<{ provider: string; model: string }>(c);
-  if (!isProvider(provider)) throw new HTTPException(400, { message: "Unknown provider" });
+  if (!isChatProvider(provider)) throw new HTTPException(400, { message: "Unknown provider" });
+  if (provider === "pro" && !isPro(currentUser(c))) throw new HTTPException(402, { message: "Lich Pro models need an active Pro plan." });
   await c.env.DB.prepare("UPDATE users SET default_provider = ?, default_model = ? WHERE id = ?")
     .bind(provider, String(model ?? "").trim() || null, currentUser(c).id)
     .run();
@@ -216,7 +257,7 @@ app.put("/settings/default", requireUser, async (c) => {
 
 app.get("/models/:provider", requireUser, async (c) => {
   const provider = c.req.param("provider");
-  if (!isProvider(provider)) throw new HTTPException(404, { message: "Unknown provider" });
+  if (!isChatProvider(provider)) throw new HTTPException(404, { message: "Unknown provider" });
   return c.json({ models: await listModels(c.env, currentUser(c).id, provider) });
 });
 
@@ -263,7 +304,7 @@ async function metered<T>(
     usable = providers.filter((p) => p.name !== SHARED_PROVIDER);
     if (!usable.length) {
       throw new HTTPException(429, {
-        message: "You've used today's shared free messages. Connect your own OpenRouter account (free) in Settings to keep going.",
+        message: "You've used your free trial messages. Connect your own OpenRouter account (free) or upgrade to Pro in Settings to keep going.",
       });
     }
   }
@@ -271,7 +312,8 @@ async function metered<T>(
   try {
     return await run(usable, counter);
   } finally {
-    if (reserved) await adjustFreeUsage(env, userId, counter.sharedCalls - 1).catch((e) => console.warn("usage settle failed", e));
+    // The trial counts messages: keep the reserved unit only if the shared key actually answered.
+    if (reserved && counter.sharedCalls === 0) await adjustFreeUsage(env, userId, -1).catch((e) => console.warn("usage settle failed", e));
   }
 }
 
@@ -327,8 +369,17 @@ app.post("/sessions", requireUser, async (c) => {
   const paper = await getPaper(c.env, id, c.executionCtx);
   if (!paper) throw new HTTPException(404, { message: "Paper not found on arXiv" });
 
+  const requestedParents = Array.isArray(builds_on) ? builds_on : [];
+  const parentLimit = BUILDS_ON_LIMIT[user.plan];
+  if (requestedParents.length > parentLimit) {
+    throw new HTTPException(402, {
+      message: isPro(user)
+        ? `You can build on up to ${parentLimit} earlier sessions.`
+        : `The free plan can build on ${parentLimit} earlier session at a time. Upgrade to Pro to combine up to ${BUILDS_ON_LIMIT.pro}.`,
+    });
+  }
   const parents: string[] = [];
-  for (const pid of (Array.isArray(builds_on) ? builds_on : []).slice(0, 5)) {
+  for (const pid of requestedParents) {
     const parent = await ownSession(c.env, user.id, String(pid));
     if (!parent.summary) await summarizeSession(c, user, parent).catch((e) => console.warn("summary failed", e));
     parents.push(parent.id);
@@ -393,9 +444,12 @@ app.post("/sessions/:id/messages", requireUser, async (c) => {
   if (input.length > 20_000) throw new HTTPException(400, { message: "Message is too long" });
 
   const chain = await resolveChain(c.env, user, new URL(c.req.url).origin, {
-    provider: isProvider(body.provider) ? body.provider : undefined,
+    provider: isChatProvider(body.provider) ? body.provider : undefined,
     model: body.model ? String(body.model) : undefined,
   });
+  // Spend fewer tokens when the app, not the user, pays for the model.
+  const primary = chain.providers[0]!.name;
+  const budget: Budget = primary === PRO_PROVIDER || primary === SHARED_PROVIDER ? "lean" : "full";
 
   return streamSSE(c, async (stream) => {
     const send = (event: string, data: unknown) => stream.writeSSE({ event, data: JSON.stringify(data) });
@@ -417,7 +471,8 @@ app.post("/sessions/:id/messages", requireUser, async (c) => {
       const result = await metered(c.env, user.id, chain.providers, (providers, counter) => runChat({
         providers,
         counter,
-        system: systemPrompt(paper, related.filter((r) => r.session_id !== s.id), buildsOn),
+        budget,
+        system: systemPrompt(paper, related.filter((r) => r.session_id !== s.id), buildsOn, budget),
         tools: paperTools({ env: c.env, user, paper, sessionId: s.id, ctx: c.executionCtx }),
         history,
         input,
@@ -437,6 +492,9 @@ app.post("/sessions/:id/messages", requireUser, async (c) => {
           now + 1,
         ),
         c.env.DB.prepare("UPDATE chat_sessions SET updated_at = ? WHERE id = ?").bind(now, s.id),
+        c.env.DB.prepare(
+          "INSERT INTO usage_events (user_id, billed_to, provider, model, prompt_tokens, completion_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ).bind(user.id, billedTo(result.provider), result.provider, result.model, result.usage.prompt_tokens, result.usage.completion_tokens, now),
       ];
       if (past.length === 0) {
         stmts.push(c.env.DB.prepare("UPDATE chat_sessions SET title = ? WHERE id = ?").bind(input.replace(/\s+/g, " ").slice(0, 80), s.id));
@@ -463,6 +521,12 @@ app.post("/knowledge", requireUser, async (c) => {
   const { content, tags, arxiv_id } = await json<{ content: string; tags: string; arxiv_id: string }>(c);
   const text = String(content ?? "").trim();
   if (!text) throw new HTTPException(400, { message: "Note is empty" });
+  try {
+    await assertCanAddNote(c.env, currentUser(c));
+  } catch (e) {
+    if (e instanceof NoteLimitError) throw new HTTPException(402, { message: e.message });
+    throw e;
+  }
   const id = await addKnowledge(c.env, currentUser(c).id, {
     content: text,
     tags: String(tags ?? ""),
@@ -471,9 +535,124 @@ app.post("/knowledge", requireUser, async (c) => {
   return c.json({ id });
 });
 
+/** Pro: download the whole knowledge base as Markdown (Obsidian/Notion friendly). */
+app.get("/knowledge/export", requireUser, async (c) => {
+  const user = currentUser(c);
+  if (!isPro(user)) throw new HTTPException(402, { message: "Exporting your knowledge base is a Pro feature." });
+  const { results } = await c.env.DB.prepare(
+    `SELECT k.kind, k.content, k.tags, k.arxiv_id, k.created_at, p.title AS paper_title
+       FROM knowledge k LEFT JOIN papers p ON p.arxiv_id = k.arxiv_id
+      WHERE k.user_id = ? ORDER BY k.created_at`,
+  )
+    .bind(user.id)
+    .all<{ kind: string; content: string; tags: string; arxiv_id: string | null; created_at: number; paper_title: string | null }>();
+  const md = [
+    "# Lich Papers knowledge base",
+    "",
+    ...results.map((k) => {
+      const lines = [`## ${k.kind === "summary" ? "Session summary" : "Note"} — ${new Date(k.created_at).toISOString().slice(0, 10)}`];
+      if (k.arxiv_id) lines.push(`Source: [${k.paper_title ?? `arXiv:${k.arxiv_id}`}](https://arxiv.org/abs/${k.arxiv_id})`);
+      if (k.tags) lines.push(`Tags: ${k.tags}`);
+      lines.push("", k.content, "");
+      return lines.join("\n");
+    }),
+  ].join("\n");
+  return new Response(md, {
+    headers: {
+      "content-type": "text/markdown; charset=utf-8",
+      "content-disposition": `attachment; filename="lich-papers-knowledge.md"`,
+    },
+  });
+});
+
 app.delete("/knowledge/:id", requireUser, async (c) => {
   await c.env.DB.prepare("DELETE FROM knowledge WHERE id = ? AND user_id = ?").bind(Number(c.req.param("id")), currentUser(c).id).run();
   return c.json({ ok: true });
+});
+
+// ---------------------------------------------------------------- billing (Stripe)
+
+app.post("/billing/checkout", requireUser, async (c) => {
+  if (!billingEnabled(c.env)) throw new HTTPException(503, { message: "Pro isn't available yet." });
+  const user = currentUser(c);
+  if (isPro(user)) throw new HTTPException(409, { message: "You're already on Pro." });
+  const origin = new URL(c.req.url).origin;
+  const row = await c.env.DB.prepare("SELECT stripe_customer_id FROM users WHERE id = ?").bind(user.id).first<{ stripe_customer_id: string | null }>();
+  let customer = row?.stripe_customer_id ?? null;
+  if (!customer) {
+    const created = await stripe<{ id: string }>(c.env, "POST", "customers", { email: user.email, metadata: { user_id: user.id } });
+    customer = created.id;
+    await c.env.DB.prepare("UPDATE users SET stripe_customer_id = ? WHERE id = ?").bind(customer, user.id).run();
+  }
+  const session = await stripe<{ url: string }>(c.env, "POST", "checkout/sessions", {
+    mode: "subscription",
+    customer,
+    client_reference_id: user.id,
+    line_items: [
+      {
+        quantity: 1,
+        price_data: {
+          currency: "usd",
+          unit_amount: Number(c.env.PRO_PRICE_CENTS ?? 1000),
+          recurring: { interval: "month" },
+          product_data: { name: `${c.env.APP_NAME} Pro` },
+        },
+      },
+    ],
+    subscription_data: { metadata: { user_id: user.id } },
+    allow_promotion_codes: true,
+    success_url: `${origin}/settings?pro=success`,
+    cancel_url: `${origin}/settings?pro=cancelled`,
+  });
+  return c.json({ url: session.url });
+});
+
+app.post("/billing/portal", requireUser, async (c) => {
+  const user = currentUser(c);
+  const row = await c.env.DB.prepare("SELECT stripe_customer_id FROM users WHERE id = ?").bind(user.id).first<{ stripe_customer_id: string | null }>();
+  if (!row?.stripe_customer_id) throw new HTTPException(400, { message: "No billing account yet." });
+  const session = await stripe<{ url: string }>(c.env, "POST", "billing_portal/sessions", {
+    customer: row.stripe_customer_id,
+    return_url: `${new URL(c.req.url).origin}/settings`,
+  });
+  return c.json({ url: session.url });
+});
+
+/** Stripe webhook. Verifies the signature, then syncs the subscription's current state. */
+app.post("/billing/webhook", async (c) => {
+  const secret = c.env.STRIPE_WEBHOOK_SECRET;
+  if (!secret) throw new HTTPException(503, { message: "Billing is not configured" });
+  const raw = await c.req.text();
+  if (!(await verifyStripeSignature(raw, c.req.header("stripe-signature"), secret, Math.floor(Date.now() / 1000)))) {
+    throw new HTTPException(400, { message: "Bad signature" });
+  }
+  const event = JSON.parse(raw) as { id: string; type: string; data: { object: any } };
+  const seen = await c.env.DB.prepare("SELECT 1 FROM stripe_events WHERE id = ?").bind(event.id).first();
+  if (seen) return c.json({ received: true, duplicate: true });
+
+  const obj = event.data.object;
+  let subscriptionId: string | null = null;
+  if (event.type === "checkout.session.completed" && obj.mode === "subscription") {
+    subscriptionId = obj.subscription;
+    if (obj.client_reference_id && obj.customer) {
+      await c.env.DB.prepare("UPDATE users SET stripe_customer_id = ? WHERE id = ? AND stripe_customer_id IS NULL")
+        .bind(obj.customer, obj.client_reference_id)
+        .run();
+    }
+  } else if (event.type.startsWith("customer.subscription.")) {
+    subscriptionId = obj.id;
+  } else if (event.type === "invoice.paid" || event.type === "invoice.payment_failed") {
+    subscriptionId = obj.subscription ?? obj.parent?.subscription_details?.subscription ?? null;
+  }
+
+  if (subscriptionId) {
+    // Re-fetch so the latest state wins regardless of event delivery order.
+    const sub = await stripe<StripeSubscription>(c.env, "GET", `subscriptions/${subscriptionId}`);
+    await syncSubscription(c.env, sub);
+  }
+  // Record only after success, so a failed sync is retried by Stripe.
+  await c.env.DB.prepare("INSERT OR IGNORE INTO stripe_events (id, created_at) VALUES (?, ?)").bind(event.id, Date.now()).run();
+  return c.json({ received: true });
 });
 
 app.all("*", (c) => c.json({ error: "Not found" }, 404));

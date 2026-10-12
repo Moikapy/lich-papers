@@ -38,7 +38,7 @@ export const loadUser: MiddlewareHandler<AppEnv> = async (c, next) => {
   let user: User | null = null;
   if (token) {
     user = await c.env.DB.prepare(
-      `SELECT u.id, u.email, u.default_provider, u.default_model
+      `SELECT u.id, u.email, u.default_provider, u.default_model, u.plan
          FROM auth_sessions s JOIN users u ON u.id = s.user_id
         WHERE s.token_hash = ? AND s.expires_at > ?`,
     )

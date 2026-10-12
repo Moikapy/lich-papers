@@ -54,6 +54,20 @@ export async function addKnowledge(
   return row!.id;
 }
 
+/** Notes (not session summaries) a free account can keep; Pro is unlimited. */
+export const FREE_NOTE_LIMIT = 100;
+
+/** Throws a user-facing message when a free account is at its note limit. */
+export async function assertCanAddNote(env: Env, user: { id: string; plan: string }): Promise<void> {
+  if (user.plan === "pro") return;
+  const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM knowledge WHERE user_id = ? AND kind = 'note'").bind(user.id).first<{ n: number }>();
+  if ((row?.n ?? 0) >= FREE_NOTE_LIMIT) {
+    throw new NoteLimitError(`The free plan keeps up to ${FREE_NOTE_LIMIT} notes. Delete some, or upgrade to Pro for unlimited notes.`);
+  }
+}
+
+export class NoteLimitError extends Error {}
+
 const REPLAY_NOTE_CHARS = 500;
 
 /** Flattens a stored note to one plain line so it cannot fake headings, lists, or system text when replayed. */

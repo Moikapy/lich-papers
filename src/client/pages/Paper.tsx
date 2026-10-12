@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, enc, postStream, PROVIDER_LABELS, timeAgo, type ChatMessage, type ModelInfo, type PaperMeta, type ProviderId, type Session, type ToolUse } from "../api";
+import { api, chatProviders, enc, postStream, PROVIDER_LABELS, timeAgo, type ChatProvider, type ChatMessage, type ModelInfo, type PaperMeta, type ProviderId, type Session, type ToolUse } from "../api";
 import { useAuth } from "../auth";
 import { Link } from "../components/Link";
 import { Markdown } from "../components/Markdown";
@@ -62,13 +62,28 @@ export function PaperPage({ arxivId, sessionId }: { arxivId: string; sessionId: 
   );
 }
 
+/** Phones and small tablets: mobile browsers can't show a PDF inside a page frame. */
+const isSmallScreen = () => typeof window !== "undefined" && window.matchMedia("(max-width: 860px)").matches;
+
 function Reader({ paper, onQuote }: { paper: PaperMeta; onQuote: (t: string) => void }) {
-  const [tab, setTab] = useState<ReaderTab>("pdf");
+  const [small] = useState(isSmallScreen);
+  const [tab, setTab] = useState<ReaderTab>(small ? "text" : "pdf");
+  const textRef = useRef<HTMLDivElement>(null);
   const [text, setText] = useState<{ body: string; source: string } | null>(null);
   const [loadingText, setLoadingText] = useState(false);
   const [textError, setTextError] = useState<string | null>(null);
   const [selection, setSelection] = useState("");
   const [attempt, setAttempt] = useState(0);
+
+  // Touch devices adjust the selection with handles after touchend, so follow selectionchange.
+  useEffect(() => {
+    const on = () => {
+      const sel = window.getSelection();
+      if (sel && textRef.current && sel.anchorNode && textRef.current.contains(sel.anchorNode)) setSelection(sel.toString().trim());
+    };
+    document.addEventListener("selectionchange", on);
+    return () => document.removeEventListener("selectionchange", on);
+  }, []);
 
   // Reader is keyed by arxiv id, so text/textError start fresh for each paper. `attempt` drives Retry.
   useEffect(() => {
@@ -111,9 +126,19 @@ function Reader({ paper, onQuote }: { paper: PaperMeta; onQuote: (t: string) => 
         )}
       </div>
       {tab === "pdf" ? (
-        <iframe className="pdf" title={paper.title} src={`/api/papers/${enc(paper.arxiv_id)}/pdf#view=FitH`} />
+        small ? (
+          <div className="pdf-mobile">
+            <p>Your browser opens PDFs in its own viewer.</p>
+            <a className="button primary" href={`/api/papers/${enc(paper.arxiv_id)}/pdf`} target="_blank" rel="noreferrer">
+              Open the PDF
+            </a>
+            <p className="muted small">Or use the Text tab to read here and select passages to ask about.</p>
+          </div>
+        ) : (
+          <iframe className="pdf" title={paper.title} src={`/api/papers/${enc(paper.arxiv_id)}/pdf#view=FitH`} />
+        )
       ) : (
-        <div className="paper-text" onMouseUp={captureSelection} onTouchEnd={captureSelection}>
+        <div className="paper-text" ref={textRef} onMouseUp={captureSelection}>
           {loadingText && <p className="muted">Extracting full text (first time can take a few seconds)…</p>}
           {textError && (
             <p className="error">
@@ -164,7 +189,7 @@ const TOOL_LABELS: Record<string, (a: Record<string, unknown>) => string> = {
 const toolLabel = (t: { name: string; args: Record<string, unknown> }) => (TOOL_LABELS[t.name]?.(t.args) ?? t.name);
 
 interface ModelChoice {
-  provider: ProviderId;
+  provider: ChatProvider;
   model: string;
 }
 
@@ -178,7 +203,7 @@ function useModelChoice(): [ModelChoice | null, (c: ModelChoice) => void, Partia
       .then((s) => {
         setProviders(s.providers);
         // A saved choice for a provider that is no longer connected falls back to OpenRouter.
-        setChoice((c) => (c && c.provider !== "openrouter" && !s.providers[c.provider]?.connected ? { provider: "openrouter", model: "" } : c));
+        setChoice((c) => (c && !chatProviders(user, s.providers).includes(c.provider) ? { provider: "openrouter", model: "" } : c));
       })
       .catch(() => {});
     let saved: ModelChoice | null = null;
@@ -197,6 +222,7 @@ function useModelChoice(): [ModelChoice | null, (c: ModelChoice) => void, Partia
 }
 
 function ModelPicker({ choice, onChange, providers }: { choice: ModelChoice; onChange: (c: ModelChoice) => void; providers: Partial<Record<ProviderId, { connected: boolean }>> }) {
+  const { user } = useAuth();
   const [models, setModels] = useState<ModelInfo[]>([]);
   useEffect(() => {
     setModels([]);
@@ -204,22 +230,23 @@ function ModelPicker({ choice, onChange, providers }: { choice: ModelChoice; onC
       .then((r) => setModels(r.models))
       .catch(() => setModels([]));
   }, [choice.provider]);
-  const available = (Object.keys(PROVIDER_LABELS) as ProviderId[]).filter((p) => p === "openrouter" || providers[p]?.connected || p === choice.provider);
+  const allowed = chatProviders(user, providers);
+  const available = allowed.includes(choice.provider) ? allowed : [...allowed, choice.provider];
   const listId = `models-${choice.provider}`;
   return (
     <div className="model-picker">
-      <select value={choice.provider} onChange={(e) => onChange({ provider: e.target.value as ProviderId, model: "" })} aria-label="Provider">
+      <select value={choice.provider} onChange={(e) => onChange({ provider: e.target.value as ChatProvider, model: "" })} aria-label="Provider">
         {available.map((p) => (
           <option key={p} value={p}>
             {PROVIDER_LABELS[p]}
-            {p !== "openrouter" && !providers[p]?.connected ? " (not connected)" : ""}
+            {allowed.includes(p) ? "" : " (not connected)"}
           </option>
         ))}
       </select>
       <input
         list={listId}
         value={choice.model}
-        placeholder={choice.provider === "openrouter" ? "openrouter/free" : "model id"}
+        placeholder={choice.provider === "openrouter" ? "openrouter/free" : choice.provider === "pro" ? "default Pro model" : "model id"}
         onChange={(e) => onChange({ ...choice, model: e.target.value })}
         aria-label="Model"
       />
@@ -496,7 +523,7 @@ function ChatPanel({ paper, sessionId, draft, setDraft }: { paper: PaperMeta; se
             }
           }}
           placeholder="Ask about this paper… (Shift+Enter for a new line)"
-          rows={3}
+          rows={2}
         />
         {pending ? (
           <button type="button" onClick={() => abort.current?.abort()}>
@@ -525,6 +552,8 @@ function ToolTrail({ tools }: { tools: (Pick<ToolUse, "name" | "args"> & { ok?: 
 }
 
 function NewSessionDialog({ paper, onClose, onCreated }: { paper: PaperMeta; onClose: () => void; onCreated: (s: Session) => void }) {
+  const { user } = useAuth();
+  const maxParents = user?.plan === "pro" ? 5 : 1;
   const [all, setAll] = useState<Session[] | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
@@ -557,7 +586,14 @@ function NewSessionDialog({ paper, onClose, onCreated }: { paper: PaperMeta; onC
     <div className="dialog">
       <h3>New conversation</h3>
       <p className="muted small">
-        Optionally build on earlier sessions (up to 5). Their summaries are given to the tutor so you can pick up where you left off. Your saved
+        Optionally build on earlier sessions (up to {maxParents}
+        {maxParents === 1 ? (
+          <>
+            {" "}
+            on the free plan; <Link href="/settings">Pro</Link> allows 5
+          </>
+        ) : null}
+        ). Their summaries are given to the tutor so you can pick up where you left off. Your saved
         notes are always searchable.
       </p>
       {!all && !error && <p className="muted small">Loading your sessions…</p>}
@@ -569,7 +605,7 @@ function NewSessionDialog({ paper, onClose, onCreated }: { paper: PaperMeta; onC
               <input
                 type="checkbox"
                 checked={picked.has(s.id)}
-                disabled={!picked.has(s.id) && picked.size >= 5}
+                disabled={!picked.has(s.id) && picked.size >= maxParents}
                 onChange={(e) => {
                   const next = new Set(picked);
                   e.target.checked ? next.add(s.id) : next.delete(s.id);

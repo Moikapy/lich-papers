@@ -1,10 +1,13 @@
 export type ProviderId = "openrouter" | "openai" | "anthropic" | "ollama";
+/** Providers a chat can run on: BYOK providers plus the Pro plan's hosted models. */
+export type ChatProvider = ProviderId | "pro";
 
 export interface User {
   id: string;
   email: string;
-  default_provider: ProviderId;
+  default_provider: ChatProvider;
   default_model: string | null;
+  plan: "free" | "pro";
 }
 
 export interface PaperMeta {
@@ -122,12 +125,22 @@ export async function postStream(
   }
 }
 
-export const PROVIDER_LABELS: Record<ProviderId, string> = {
+export const PROVIDER_LABELS: Record<ChatProvider, string> = {
+  pro: "Lich Pro",
   openrouter: "OpenRouter",
   openai: "OpenAI",
   anthropic: "Anthropic",
   ollama: "Ollama",
 };
+
+/** Chat providers a user can pick: Pro (if subscribed), OpenRouter, then connected BYOK providers. */
+export function chatProviders(user: Pick<User, "plan"> | null, connected: Partial<Record<ProviderId, { connected: boolean }>>): ChatProvider[] {
+  const out: ChatProvider[] = [];
+  if (user?.plan === "pro") out.push("pro");
+  out.push("openrouter");
+  for (const p of ["openai", "anthropic", "ollama"] as ProviderId[]) if (connected[p]?.connected) out.push(p);
+  return out;
+}
 
 export function timeAgo(ms: number): string {
   const s = Math.round((Date.now() - ms) / 1000);

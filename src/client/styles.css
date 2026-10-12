@@ -115,7 +115,14 @@ label.inline { display: flex; gap: 0.4rem; align-items: center; }
 details summary { cursor: pointer; font-weight: 600; }
 
 /* paper */
-.paper { display: flex; flex-direction: column; height: calc(100vh - 53px); height: calc(100dvh - 53px); }
+/* App shell: the paper page fills exactly one screen so the chat composer is always visible. */
+.app { min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; }
+.app > .main { width: 100%; min-width: 0; }
+.app.paper-mode { height: 100vh; height: 100dvh; overflow: hidden; }
+.app.paper-mode .main.wide { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.paper { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.tabbar { display: none; }
+.pdf-mobile { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.75rem; padding: 2rem 1.5rem; text-align: center; }
 .paper-head { padding: 0.9rem 1.25rem 0.6rem; border-bottom: 1px solid var(--border); }
 .paper-head h1 { font-size: 1.25rem; margin: 0; }
 .paper-head .byline { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -171,12 +178,56 @@ details summary { cursor: pointer; font-weight: 600; }
 .md .katex-display { overflow-x: auto; overflow-y: hidden; padding: 0.25rem 0; }
 
 @media (max-width: 860px) {
+  /* Inputs at 16px stop iOS from zooming in on focus. */
+  input, select, textarea { font-size: 16px; }
+
+  /* Header: brand + Go Pro / Sign in only; sections move to the bottom tab bar. */
+  .desk { display: none !important; }
+  .topbar { padding: 0.5rem 0.9rem; padding-top: max(0.5rem, env(safe-area-inset-top)); }
+  .tabbar {
+    display: flex; justify-content: space-around; position: fixed; left: 0; right: 0; bottom: 0; z-index: 15;
+    background: var(--panel); border-top: 1px solid var(--border);
+    padding: 0.25rem 0 calc(0.25rem + env(safe-area-inset-bottom));
+  }
+  .tabbar a { display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 64px; padding: 0.35rem 0.5rem; border-radius: 10px; color: var(--muted); font-size: 0.72rem; }
+  .tabbar a:hover { text-decoration: none; }
+  .tabbar a.active { color: var(--accent); }
+  .app.has-tabbar .main { padding-bottom: calc(5rem + env(safe-area-inset-bottom)); }
+  .main { padding: 1rem 0.9rem 3rem; }
+
+  /* Search */
+  .hero { padding: 1.25rem 0 0.25rem; }
+  .hero h1 { font-size: 1.55rem; }
+  .filters { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-bottom: 0.25rem; margin-inline: -0.9rem; padding-inline: 0.9rem; }
+  .filters::-webkit-scrollbar { display: none; }
+  .chip, .filters select { flex: 0 0 auto; }
+  .filters select { margin-left: 0; width: auto; }
+  .result { padding: 0.85rem 0.9rem; }
+
+  /* Paper */
   .panes { grid-template-columns: 1fr; }
   .panes.show-read .chat, .panes.show-chat .reader { display: none; }
   .reader { border-right: 0; }
-  .mobile-switch { display: flex; }
+  .paper-head { padding: 0.6rem 0.9rem 0.5rem; }
+  .paper-head h1 { font-size: 1.02rem; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   .paper-head .byline, .paper-head .meta { display: none; }
-  .hero h1 { font-size: 1.6rem; }
-  .topbar { padding: 0.5rem 0.75rem; }
-  .main { padding: 1rem 0.9rem 3rem; }
+  .mobile-switch { display: flex; margin-top: 0.45rem; }
+  .mobile-switch button { flex: 1; justify-content: center; }
+  .paper-text { padding: 0.9rem; }
+  .chat .toolbar { flex-wrap: wrap; padding: 0.45rem 0.6rem; }
+  .chat .toolbar select { flex: 1 1 100%; }
+  .chat .toolbar button { flex: 1; justify-content: center; }
+  .model-picker { grid-template-columns: 112px 1fr; padding: 0.45rem 0.6rem; }
+  .messages { padding: 0.75rem 0.7rem; }
+  .msg.user { max-width: 92%; }
+  .composer { padding: 0.5rem 0.6rem calc(0.5rem + env(safe-area-inset-bottom)); }
+  .composer textarea { min-height: 2.75rem; max-height: 9rem; }
+  .dialog { max-height: 60dvh; }
 }
+
+/* plan */
+.features { margin: 0.25rem 0 0.75rem; padding-left: 1.2rem; }
+.features li { margin: 0.15rem 0; }
+.meter { height: 8px; background: var(--accent-soft); border-radius: 999px; overflow: hidden; margin: 0.25rem 0 0.5rem; }
+.meter span { display: block; height: 100%; background: var(--accent); }
+.topbar nav a.go-pro { color: var(--accent); font-weight: 600; }

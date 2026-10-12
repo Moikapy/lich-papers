@@ -1,7 +1,8 @@
 import type { ProviderConfig } from "@moikapy/lich";
 import { HTTPException } from "hono/http-exception";
 import { decryptSecret, encryptSecret } from "./crypto";
-import type { Env, ProviderId, User } from "./env";
+import { isPro, type ChatProvider, type Env, type ProviderId, type User } from "./env";
+import { loadProKey } from "./billing";
 
 export const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 export const FREE_ROUTER_MODEL = "openrouter/free";
@@ -71,6 +72,16 @@ function openRouterFetch(appUrl: string, appName: string): typeof fetch {
 }
 
 export const SHARED_PROVIDER = "openrouter-free-shared";
+/** Pro plan's capped key: the chosen model, and the free router on the same key as fallback. */
+export const PRO_PROVIDER = "pro";
+export const PRO_FREE_PROVIDER = "pro-free";
+
+/** Who pays for a reply, from the lich provider name that produced it. */
+export function billedTo(providerName: string | null): "user" | "pro" | "trial" {
+  if (providerName === SHARED_PROVIDER) return "trial";
+  if (providerName === PRO_PROVIDER || providerName === PRO_FREE_PROVIDER) return "pro";
+  return "user";
+}
 
 export interface ResolvedChain {
   providers: ProviderConfig[];
@@ -86,20 +97,38 @@ export async function resolveChain(
   env: Env,
   user: User,
   appUrl: string,
-  requested: { provider?: ProviderId; model?: string },
+  requested: { provider?: ChatProvider; model?: string },
 ): Promise<ResolvedChain> {
   const keys = await loadKeys(env, user.id);
-  const provider = requested.provider ?? user.default_provider ?? "openrouter";
+  let provider: ChatProvider = requested.provider ?? user.default_provider ?? "openrouter";
+  if (provider === "pro" && !isPro(user)) {
+    if (requested.provider === "pro") throw new HTTPException(402, { message: "Lich Pro models need an active Pro plan." });
+    provider = "openrouter";
+  }
   const model = requested.model || (provider === user.default_provider ? user.default_model : null) || null;
-  if (requested.provider && provider !== "openrouter" && !model && keys.get(provider)) {
+  if (requested.provider && provider !== "openrouter" && provider !== "pro" && !model && keys.get(provider)) {
     throw new HTTPException(400, { message: `Choose a model for ${provider}` });
   }
+  const proKey = isPro(user) ? await loadProKey(env, user.id) : null;
   const orFetch = openRouterFetch(appUrl, env.APP_NAME);
   const chain: ProviderConfig[] = [];
   const timeout_ms = 90_000;
 
-  const k = keys.get(provider);
+  const k = provider === "pro" ? undefined : keys.get(provider);
   switch (provider) {
+    case "pro":
+      if (proKey) {
+        chain.push({
+          kind: "openai_compat",
+          name: PRO_PROVIDER,
+          model: model ?? env.PRO_DEFAULT_MODEL ?? FREE_ROUTER_MODEL,
+          base_url: OPENROUTER_BASE,
+          api_key: proKey,
+          fetch_fn: orFetch,
+          timeout_ms,
+        });
+      }
+      break;
     case "openai":
       if (k?.api_key && model) {
         chain.push({ kind: "openai_compat", name: "openai", model, base_url: k.base_url ?? OPENAI_BASE, api_key: k.api_key, timeout_ms });
@@ -141,11 +170,12 @@ export async function resolveChain(
   const orKey = keys.get("openrouter")?.api_key;
   const alreadyFree = chain.some((p) => p.name === "openrouter" && p.model === FREE_ROUTER_MODEL);
   if (!alreadyFree) {
-    const fallbackKey = orKey ?? (env.OPENROUTER_API_KEY && (await freeUsageRemaining(env, user.id)) > 0 ? env.OPENROUTER_API_KEY : undefined);
+    const trialKey = !orKey && !proKey && env.OPENROUTER_API_KEY && (await freeUsageRemaining(env, user.id)) > 0 ? env.OPENROUTER_API_KEY : undefined;
+    const fallbackKey = orKey ?? proKey ?? trialKey;
     if (fallbackKey) {
       chain.push({
         kind: "openai_compat",
-        name: orKey ? "openrouter-free" : SHARED_PROVIDER,
+        name: orKey ? "openrouter-free" : proKey ? PRO_FREE_PROVIDER : SHARED_PROVIDER,
         model: FREE_ROUTER_MODEL,
         base_url: OPENROUTER_BASE,
         api_key: fallbackKey,
@@ -159,7 +189,7 @@ export async function resolveChain(
     const hitCap = !orKey && !!env.OPENROUTER_API_KEY;
     throw new HTTPException(hitCap ? 429 : 400, {
       message: hitCap
-        ? "You've used today's shared free messages. Connect your own OpenRouter account (free) in Settings to keep going."
+        ? "You've used your free trial messages. Connect your own OpenRouter account (free) or upgrade to Pro in Settings to keep going."
         : "No model available. Connect OpenRouter (free) or add an API key in Settings.",
     });
   }
@@ -167,20 +197,26 @@ export async function resolveChain(
   return { providers: chain, label: `${primary.name}/${primary.model}` };
 }
 
-const today = () => new Date().toISOString().slice(0, 10);
+/**
+ * The shared server key is a one-time trial, counted in messages. It lives in free_usage under a
+ * fixed key instead of a calendar day, so it never resets.
+ */
+const TRIAL = "trial";
+const today = () => TRIAL;
+export const trialLimit = (env: Env) => Number(env.FREE_TRIAL_MESSAGES ?? 10);
 
-/** Remaining requests today on the server-funded key. */
+/** Trial messages the user has left on the server-funded key. */
 export async function freeUsageRemaining(env: Env, userId: string): Promise<number> {
-  const limit = Number(env.FREE_DAILY_LIMIT ?? 50);
+  const limit = trialLimit(env);
   const row = await env.DB.prepare("SELECT requests FROM free_usage WHERE user_id = ? AND day = ?")
     .bind(userId, today())
     .first<{ requests: number }>();
   return limit - (row?.requests ?? 0);
 }
 
-/** Atomically takes one unit of today's shared quota; false when the cap is reached. */
+/** Atomically takes one trial message; false when the trial is used up. */
 export async function reserveFreeUsage(env: Env, userId: string): Promise<boolean> {
-  const limit = Number(env.FREE_DAILY_LIMIT ?? 50);
+  const limit = trialLimit(env);
   if (limit <= 0) return false;
   const res = await env.DB.prepare(
     `INSERT INTO free_usage (user_id, day, requests) VALUES (?, ?, 1)
@@ -191,7 +227,7 @@ export async function reserveFreeUsage(env: Env, userId: string): Promise<boolea
   return (res.meta?.changes ?? 0) > 0;
 }
 
-/** Corrects a reservation once the real number of shared calls is known (delta may be negative). */
+/** Corrects a reservation afterwards (delta may be negative, e.g. -1 to refund an unused one). */
 export async function adjustFreeUsage(env: Env, userId: string, delta: number): Promise<void> {
   if (!delta) return;
   await env.DB.prepare("UPDATE free_usage SET requests = MAX(0, requests + ?) WHERE user_id = ? AND day = ?")
@@ -217,15 +253,16 @@ export interface ModelInfo {
 }
 
 /** Lists models a user can pick for a provider, using their stored key. */
-export async function listModels(env: Env, userId: string, provider: ProviderId): Promise<ModelInfo[]> {
+export async function listModels(env: Env, userId: string, provider: ChatProvider): Promise<ModelInfo[]> {
   const keys = await loadKeys(env, userId);
-  const k = keys.get(provider);
+  const k = provider === "pro" ? undefined : keys.get(provider);
   const get = async (url: string, headers: Record<string, string> = {}) => {
     const res = await fetch(url, { headers });
     if (!res.ok) throw new HTTPException(502, { message: `${provider} model list failed (${res.status})` });
     return (await res.json()) as any;
   };
   switch (provider) {
+    case "pro":
     case "openrouter": {
       const data = await get(`${OPENROUTER_BASE}/models`);
       const models: ModelInfo[] = (data.data ?? []).map((m: any) => ({
@@ -234,6 +271,10 @@ export async function listModels(env: Env, userId: string, provider: ProviderId)
         free: m.pricing?.prompt === "0" && m.pricing?.completion === "0",
         context: m.context_length,
       }));
+      if (provider === "pro") {
+        const preferred = env.PRO_DEFAULT_MODEL;
+        return preferred ? [...models.filter((m) => m.id === preferred), ...models.filter((m) => m.id !== preferred)] : models;
+      }
       models.unshift({ id: FREE_ROUTER_MODEL, name: "Free Models Router (auto)", free: true });
       return models;
     }

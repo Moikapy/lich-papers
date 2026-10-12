@@ -19,9 +19,17 @@
   ],
   "vars": {
     "APP_NAME": "Lich Papers",
-    "DEFAULT_MODEL": "openrouter/free"
+    "DEFAULT_MODEL": "openrouter/free",
+    // Pro plan: $10/month, with each subscriber's model spend capped at $4/month on their own OpenRouter key.
+    "PRO_PRICE_CENTS": "1000",
+    "PRO_MONTHLY_CAP_USD": "4",
+    "PRO_DEFAULT_MODEL": "google/gemini-2.5-flash",
+    // One-time trial on the shared OPENROUTER_API_KEY, in messages.
+    "FREE_TRIAL_MESSAGES": "10"
   }
   // Secrets (set with `wrangler secret put`):
   //   ENCRYPTION_KEY       – required; base64 32-byte key used to encrypt stored API keys
-  //   OPENROUTER_API_KEY   – optional; server key so users can try the free router before connecting OpenRouter
+  //   OPENROUTER_API_KEY   – optional; server key for a one-time free trial on the free router
+  //   STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, OPENROUTER_PROVISIONING_KEY – required for the Pro plan
+  //   COMP_PRO_USER_IDS    – optional; comma-separated account IDs that get Pro for free (needs OPENROUTER_PROVISIONING_KEY)
 }

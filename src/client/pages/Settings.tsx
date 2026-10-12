@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { api, PROVIDER_LABELS, type ModelInfo, type ProviderId } from "../api";
+import { useEffect, useRef, useState } from "react";
+import { api, chatProviders, PROVIDER_LABELS, type ChatProvider, type ModelInfo, type ProviderId, type User } from "../api";
 import { useAuth } from "../auth";
 import { startOpenRouterConnect } from "../openrouter";
 import { useLocation } from "../router";
@@ -12,12 +12,24 @@ interface ProviderStatus {
   key_hint?: string | null;
 }
 
+interface PlanInfo {
+  plan: "free" | "pro";
+  status: string | null;
+  renews_at: number | null;
+  has_billing_account: boolean;
+  price_cents: number;
+  monthly_cap_usd: number;
+  allowance: { limit: number | null; remaining: number | null; usage: number | null } | null;
+  billing_enabled: boolean;
+}
+
 interface SettingsData {
-  default_provider: ProviderId;
+  default_provider: ChatProvider;
   default_model: string | null;
   providers: Record<ProviderId, ProviderStatus>;
   openrouter_credits: { total: number; used: number } | null;
-  shared_free: { remaining_today: number; limit: number } | null;
+  trial: { remaining: number; limit: number } | null;
+  plan: PlanInfo;
 }
 
 const KEY_HELP: Record<ProviderId, { placeholder: string; link: string; note: string }> = {
@@ -32,12 +44,19 @@ const KEY_HELP: Record<ProviderId, { placeholder: string; link: string; note: st
 };
 
 export function SettingsPage() {
-  const { user, setUser } = useAuth();
+  const { user, setUser, logout } = useAuth();
   const url = useLocation();
   const [data, setData] = useState<SettingsData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const proParam = url.searchParams.get("pro");
   const [flash, setFlash] = useState<string | null>(
-    url.searchParams.get("connected") === "openrouter" ? "OpenRouter connected. You can now use free models and any models your credits cover." : null,
+    url.searchParams.get("connected") === "openrouter"
+      ? "OpenRouter connected. You can now use free models and any models your credits cover."
+      : proParam === "success"
+        ? "Payment received. Activating Pro…"
+        : proParam === "cancelled"
+          ? "Checkout cancelled. You haven't been charged."
+          : null,
   );
 
   const load = () =>
@@ -48,6 +67,28 @@ export function SettingsPage() {
   useEffect(() => {
     if (user) load();
   }, [user]);
+
+  // After checkout, Pro turns on when Stripe's webhook lands (usually seconds). Poll briefly.
+  const polled = useRef(false);
+  useEffect(() => {
+    if (proParam !== "success" || !user || polled.current) return;
+    polled.current = true;
+    if (user.plan === "pro") return setFlash("Welcome to Pro! Lich Pro models are now available in the chat.");
+    let tries = 0;
+    const timer = setInterval(async () => {
+      tries++;
+      const me = await api<{ user: User | null }>("/me").catch(() => null);
+      if (me?.user?.plan === "pro") {
+        clearInterval(timer);
+        setUser(me.user);
+        setFlash("Welcome to Pro! Lich Pro models are now available in the chat.");
+      } else if (tries >= 15) {
+        clearInterval(timer);
+        setFlash("Payment received, but Pro isn't active yet. Refresh in a minute; if it still isn't on, contact support.");
+      }
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [proParam, user, setUser]);
 
   return (
     <RequireAuth>
@@ -73,10 +114,23 @@ export function SettingsPage() {
         {error && <p className="error">{error}</p>}
         {data && (
           <>
+            <PlanCard plan={data.plan} />
             <OpenRouterCard data={data} reload={load} />
             {(["openai", "anthropic", "ollama"] as ProviderId[]).map((p) => (
               <KeyCard key={p} provider={p} status={data.providers[p]} reload={load} />
             ))}
+            <section className="card">
+              <h3>Account</h3>
+              <p className="small">
+                Signed in as <strong>{user?.email}</strong>
+              </p>
+              <p className="muted small">
+                Account ID: <code className="selectable">{user?.id}</code>
+              </p>
+              <div className="row">
+                <button onClick={logout}>Sign out</button>
+              </div>
+            </section>
             <DefaultModelCard
               data={data}
               onSaved={(provider, model) => {
@@ -92,6 +146,89 @@ export function SettingsPage() {
         )}
       </div>
     </RequireAuth>
+  );
+}
+
+const PRO_FEATURES = [
+  "Strong hosted models, no API key needed",
+  "Unlimited notes in your knowledge base",
+  "Build on up to 5 earlier sessions at once",
+  "Export your knowledge base to Markdown (Obsidian, Notion)",
+];
+
+function PlanCard({ plan }: { plan: PlanInfo }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const price = `$${(plan.price_cents / 100).toFixed(plan.price_cents % 100 ? 2 : 0)}`;
+
+  const go = async (path: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const { url } = await api<{ url: string }>(path, { method: "POST" });
+      location.href = url;
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  };
+
+  if (plan.plan === "pro") {
+    const a = plan.allowance;
+    const usedPct = a?.limit && a.remaining !== null ? Math.min(100, Math.round(((a.limit - a.remaining) / a.limit) * 100)) : null;
+    return (
+      <section className="card highlight">
+        <h3>
+          Lich Pro <span className="tag ok">{plan.status === "past_due" ? "payment issue" : plan.status === "comp" ? "complimentary" : "active"}</span>
+        </h3>
+        {plan.status === "past_due" && <p className="error small">Your last payment failed. Update your card to keep Pro.</p>}
+        {usedPct !== null && (
+          <>
+            <p className="small">AI allowance this month: {usedPct}% used. It resets on the 1st.</p>
+            <div className="meter" role="progressbar" aria-label="AI allowance used" aria-valuenow={usedPct} aria-valuemin={0} aria-valuemax={100}>
+              <span style={{ width: `${usedPct}%` }} />
+            </div>
+          </>
+        )}
+        {plan.renews_at && <p className="muted small">Renews {new Date(plan.renews_at).toLocaleDateString()}.</p>}
+        <p className="muted small">If you use up the month's allowance, chats keep working on the free model router until it resets.</p>
+        {error && <p className="error">{error}</p>}
+        {plan.has_billing_account && (
+          <div className="row">
+            <button onClick={() => go("/billing/portal")} disabled={busy}>
+              Manage billing
+            </button>
+          </div>
+        )}
+      </section>
+    );
+  }
+
+  return (
+    <section className="card">
+      <h3>Lich Pro · {price}/month</h3>
+      <ul className="features">
+        {PRO_FEATURES.map((f) => (
+          <li key={f}>{f}</li>
+        ))}
+      </ul>
+      {error && <p className="error">{error}</p>}
+      {plan.billing_enabled ? (
+        <div className="row">
+          <button className="primary" onClick={() => go("/billing/checkout")} disabled={busy}>
+            {busy ? "Opening checkout…" : `Upgrade for ${price}/month`}
+          </button>
+          {plan.has_billing_account && (
+            <button onClick={() => go("/billing/portal")} disabled={busy}>
+              Billing history
+            </button>
+          )}
+        </div>
+      ) : (
+        <p className="muted small">Pro is coming soon.</p>
+      )}
+      <p className="muted small">Cancel anytime. Free stays free: use your own OpenRouter account or API keys.</p>
+    </section>
   );
 }
 
@@ -134,9 +271,9 @@ function OpenRouterCard({ data, reload }: { data: SettingsData; reload: () => vo
         </>
       ) : (
         <>
-          {data.shared_free && (
+          {data.trial && (
             <p className="small">
-              Until you connect, you're using a shared free allowance: {data.shared_free.remaining_today}/{data.shared_free.limit} messages left today.
+              Until you connect, you're on a free trial: {data.trial.remaining} of {data.trial.limit} messages left.
             </p>
           )}
           <div className="row">
@@ -254,9 +391,9 @@ function KeyForm({ provider, initialBase = "", onSaved, onCancel }: { provider: 
   );
 }
 
-function DefaultModelCard({ data, onSaved }: { data: SettingsData; onSaved: (p: ProviderId, m: string) => void }) {
-  const available = (Object.keys(PROVIDER_LABELS) as ProviderId[]).filter((p) => p === "openrouter" || data.providers[p].connected);
-  const [provider, setProvider] = useState<ProviderId>(available.includes(data.default_provider) ? data.default_provider : "openrouter");
+function DefaultModelCard({ data, onSaved }: { data: SettingsData; onSaved: (p: ChatProvider, m: string) => void }) {
+  const available = chatProviders(data.plan, data.providers);
+  const [provider, setProvider] = useState<ChatProvider>(available.includes(data.default_provider) ? data.default_provider : "openrouter");
   const [model, setModel] = useState(data.default_model ?? "");
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [freeOnly, setFreeOnly] = useState(false);
@@ -283,7 +420,7 @@ function DefaultModelCard({ data, onSaved }: { data: SettingsData; onSaved: (p: 
         OpenRouter router automatically.
       </p>
       <div className="stack">
-        <select value={provider} aria-label="Default provider" onChange={(e) => (setProvider(e.target.value as ProviderId), setModel(""))}>
+        <select value={provider} aria-label="Default provider" onChange={(e) => (setProvider(e.target.value as ChatProvider), setModel(""))}>
           {available.map((p) => (
             <option key={p} value={p}>
               {PROVIDER_LABELS[p]}
@@ -292,7 +429,7 @@ function DefaultModelCard({ data, onSaved }: { data: SettingsData; onSaved: (p: 
         </select>
         {models.length > 0 ? (
           <select value={model} aria-label="Default model" onChange={(e) => setModel(e.target.value)}>
-            <option value="">{provider === "openrouter" ? "openrouter/free (default)" : "Choose a model…"}</option>
+            <option value="">{provider === "openrouter" ? "openrouter/free (default)" : provider === "pro" ? "Recommended Pro model (default)" : "Choose a model…"}</option>
             {model && !shown.some((m) => m.id === model) && <option value={model}>{model}</option>}
             {shown.map((m) => (
               <option key={m.id} value={m.id}>
@@ -314,7 +451,7 @@ function DefaultModelCard({ data, onSaved }: { data: SettingsData; onSaved: (p: 
           className="primary"
           onClick={async () => {
             setError(null);
-            if (provider !== "openrouter" && !model) return setError("Choose a model for this provider.");
+            if (provider !== "openrouter" && provider !== "pro" && !model) return setError("Choose a model for this provider.");
             try {
               await api("/settings/default", { method: "PUT", json: { provider, model } });
               onSaved(provider, model);
