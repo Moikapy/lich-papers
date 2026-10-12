@@ -199,3 +199,43 @@ export async function syncSubscription(env: Env, sub: StripeSubscription): Promi
     await revokeProKey(env, userId);
   }
 }
+
+// ---------------------------------------------------------------- Complimentary Pro
+
+export function compUserIds(env: Env): Set<string> {
+  return new Set((env.COMP_PRO_USER_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean));
+}
+
+/**
+ * Grants or removes complimentary Pro for IDs in COMP_PRO_USER_IDS. Returns the user's plan after
+ * the check. Writes only when something changes. Paid subscriptions are left alone.
+ */
+export async function applyComp(env: Env, user: { id: string; plan: string }): Promise<"free" | "pro"> {
+  const listed = compUserIds(env).has(user.id);
+  const row = await env.DB.prepare("SELECT plan, plan_status FROM users WHERE id = ?").bind(user.id).first<{ plan: string; plan_status: string | null }>();
+  if (!row) return "free";
+  if (listed && row.plan !== "pro") {
+    await ensureProKey(env, user.id);
+    await env.DB.prepare(
+      `UPDATE users SET plan = 'pro', plan_status = 'comp',
+         default_provider = CASE WHEN default_provider = 'openrouter' AND default_model IS NULL THEN 'pro' ELSE default_provider END
+       WHERE id = ?`,
+    )
+      .bind(user.id)
+      .run();
+    return "pro";
+  }
+  if (!listed && row.plan_status === "comp") {
+    await env.DB.prepare(
+      `UPDATE users SET plan = 'free', plan_status = NULL,
+         default_provider = CASE WHEN default_provider = 'pro' THEN 'openrouter' ELSE default_provider END,
+         default_model = CASE WHEN default_provider = 'pro' THEN NULL ELSE default_model END
+       WHERE id = ?`,
+    )
+      .bind(user.id)
+      .run();
+    await revokeProKey(env, user.id);
+    return "free";
+  }
+  return row.plan === "pro" ? "pro" : "free";
+}

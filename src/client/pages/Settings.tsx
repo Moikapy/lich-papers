@@ -44,7 +44,7 @@ const KEY_HELP: Record<ProviderId, { placeholder: string; link: string; note: st
 };
 
 export function SettingsPage() {
-  const { user, setUser } = useAuth();
+  const { user, setUser, logout } = useAuth();
   const url = useLocation();
   const [data, setData] = useState<SettingsData | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -119,6 +119,18 @@ export function SettingsPage() {
             {(["openai", "anthropic", "ollama"] as ProviderId[]).map((p) => (
               <KeyCard key={p} provider={p} status={data.providers[p]} reload={load} />
             ))}
+            <section className="card">
+              <h3>Account</h3>
+              <p className="small">
+                Signed in as <strong>{user?.email}</strong>
+              </p>
+              <p className="muted small">
+                Account ID: <code className="selectable">{user?.id}</code>
+              </p>
+              <div className="row">
+                <button onClick={logout}>Sign out</button>
+              </div>
+            </section>
             <DefaultModelCard
               data={data}
               onSaved={(provider, model) => {
@@ -167,7 +179,7 @@ function PlanCard({ plan }: { plan: PlanInfo }) {
     return (
       <section className="card highlight">
         <h3>
-          Lich Pro <span className="tag ok">{plan.status === "past_due" ? "payment issue" : "active"}</span>
+          Lich Pro <span className="tag ok">{plan.status === "past_due" ? "payment issue" : plan.status === "comp" ? "complimentary" : "active"}</span>
         </h3>
         {plan.status === "past_due" && <p className="error small">Your last payment failed. Update your card to keep Pro.</p>}
         {usedPct !== null && (
@@ -181,11 +193,13 @@ function PlanCard({ plan }: { plan: PlanInfo }) {
         {plan.renews_at && <p className="muted small">Renews {new Date(plan.renews_at).toLocaleDateString()}.</p>}
         <p className="muted small">If you use up the month's allowance, chats keep working on the free model router until it resets.</p>
         {error && <p className="error">{error}</p>}
-        <div className="row">
-          <button onClick={() => go("/billing/portal")} disabled={busy}>
-            Manage billing
-          </button>
-        </div>
+        {plan.has_billing_account && (
+          <div className="row">
+            <button onClick={() => go("/billing/portal")} disabled={busy}>
+              Manage billing
+            </button>
+          </div>
+        )}
       </section>
     );
   }

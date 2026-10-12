@@ -8,7 +8,7 @@ import { hashPassword, verifyPassword } from "./crypto";
 import { isPro, PROVIDERS, type AppEnv, type ChatProvider, type Ctx, type Env, type ProviderId, type User } from "./env";
 import { addKnowledge, assertCanAddNote, listKnowledge, NoteLimitError, searchKnowledge } from "./knowledge";
 import { paperTools, runChat, safeProviderMessage, summarize, systemPrompt, type Budget } from "./agent";
-import { loadProKey, proAllowance, proCapUsd, stripe, syncSubscription, verifyStripeSignature, type StripeSubscription } from "./billing";
+import { applyComp, loadProKey, proAllowance, proCapUsd, stripe, syncSubscription, verifyStripeSignature, type StripeSubscription } from "./billing";
 import {
   exchangeOpenRouterCode,
   freeUsageRemaining,
@@ -63,7 +63,23 @@ function arxivIdParam(raw: string): string {
 
 // ---------------------------------------------------------------- auth
 
-app.get("/me", (c) => c.json({ user: c.get("user") }));
+app.get("/me", async (c) => {
+  const user = c.get("user");
+  if (!user) return c.json({ user: null });
+  // Complimentary Pro (COMP_PRO_USER_IDS) is applied here, on app load. Failures never block sign-in.
+  if (c.env.COMP_PRO_USER_IDS || user.plan === "pro") {
+    try {
+      const plan = await applyComp(c.env, user);
+      if (plan !== user.plan) {
+        const fresh = await c.env.DB.prepare("SELECT id, email, default_provider, default_model, plan FROM users WHERE id = ?").bind(user.id).first<User>();
+        return c.json({ user: fresh ?? user });
+      }
+    } catch (err) {
+      console.error("comp check failed", err);
+    }
+  }
+  return c.json({ user });
+});
 
 app.post("/auth/signup", async (c) => {
   const { email, password } = await json<{ email: string; password: string }>(c);

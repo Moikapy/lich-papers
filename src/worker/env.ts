@@ -22,6 +22,11 @@ export interface Env {
   PRO_MONTHLY_CAP_USD?: string;
   /** Default OpenRouter model for Pro chats. */
   PRO_DEFAULT_MODEL?: string;
+  /**
+   * Comma-separated user IDs that get Pro for free (owner/staff accounts). IDs, not emails:
+   * emails aren't verified, so anyone could register an address first.
+   */
+  COMP_PRO_USER_IDS?: string;
   /** Dev/testing only: override the Stripe and OpenRouter management API base URLs. */
   STRIPE_API_BASE?: string;
   OPENROUTER_MGMT_BASE?: string;

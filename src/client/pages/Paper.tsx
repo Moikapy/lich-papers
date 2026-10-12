@@ -62,13 +62,28 @@ export function PaperPage({ arxivId, sessionId }: { arxivId: string; sessionId: 
   );
 }
 
+/** Phones and small tablets: mobile browsers can't show a PDF inside a page frame. */
+const isSmallScreen = () => typeof window !== "undefined" && window.matchMedia("(max-width: 860px)").matches;
+
 function Reader({ paper, onQuote }: { paper: PaperMeta; onQuote: (t: string) => void }) {
-  const [tab, setTab] = useState<ReaderTab>("pdf");
+  const [small] = useState(isSmallScreen);
+  const [tab, setTab] = useState<ReaderTab>(small ? "text" : "pdf");
+  const textRef = useRef<HTMLDivElement>(null);
   const [text, setText] = useState<{ body: string; source: string } | null>(null);
   const [loadingText, setLoadingText] = useState(false);
   const [textError, setTextError] = useState<string | null>(null);
   const [selection, setSelection] = useState("");
   const [attempt, setAttempt] = useState(0);
+
+  // Touch devices adjust the selection with handles after touchend, so follow selectionchange.
+  useEffect(() => {
+    const on = () => {
+      const sel = window.getSelection();
+      if (sel && textRef.current && sel.anchorNode && textRef.current.contains(sel.anchorNode)) setSelection(sel.toString().trim());
+    };
+    document.addEventListener("selectionchange", on);
+    return () => document.removeEventListener("selectionchange", on);
+  }, []);
 
   // Reader is keyed by arxiv id, so text/textError start fresh for each paper. `attempt` drives Retry.
   useEffect(() => {
@@ -111,9 +126,19 @@ function Reader({ paper, onQuote }: { paper: PaperMeta; onQuote: (t: string) => 
         )}
       </div>
       {tab === "pdf" ? (
-        <iframe className="pdf" title={paper.title} src={`/api/papers/${enc(paper.arxiv_id)}/pdf#view=FitH`} />
+        small ? (
+          <div className="pdf-mobile">
+            <p>Your browser opens PDFs in its own viewer.</p>
+            <a className="button primary" href={`/api/papers/${enc(paper.arxiv_id)}/pdf`} target="_blank" rel="noreferrer">
+              Open the PDF
+            </a>
+            <p className="muted small">Or use the Text tab to read here and select passages to ask about.</p>
+          </div>
+        ) : (
+          <iframe className="pdf" title={paper.title} src={`/api/papers/${enc(paper.arxiv_id)}/pdf#view=FitH`} />
+        )
       ) : (
-        <div className="paper-text" onMouseUp={captureSelection} onTouchEnd={captureSelection}>
+        <div className="paper-text" ref={textRef} onMouseUp={captureSelection}>
           {loadingText && <p className="muted">Extracting full text (first time can take a few seconds)…</p>}
           {textError && (
             <p className="error">
@@ -498,7 +523,7 @@ function ChatPanel({ paper, sessionId, draft, setDraft }: { paper: PaperMeta; se
             }
           }}
           placeholder="Ask about this paper… (Shift+Enter for a new line)"
-          rows={3}
+          rows={2}
         />
         {pending ? (
           <button type="button" onClick={() => abort.current?.abort()}>

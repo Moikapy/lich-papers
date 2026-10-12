@@ -98,6 +98,7 @@ setup, every push to `main` deploys.
    - **Webhook.** In Stripe → Developers → Webhooks, add the endpoint `https://<your-domain>/api/billing/webhook` with these events: `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`. Copy its signing secret into `STRIPE_WEBHOOK_SECRET`.
    - **Customer portal.** In Stripe → Settings → Billing → Customer portal, save the settings once (allow cancellation and payment-method updates). "Manage billing" won't work until you do.
    - **No product setup needed.** Checkout creates the $10/month price inline. The price, cap and default model are the `PRO_*` vars in `wrangler.jsonc`.
+   - **Free Pro for yourself or staff.** Sign up, copy your Account ID from Settings, and add it to the `COMP_PRO_USER_IDS` secret (comma-separated). On your next visit the account switches to Pro, with no Stripe involved and the same monthly cap. Remove the ID to undo. This uses IDs rather than emails because emails aren't verified, so anyone could register your address first.
    - **Check the default model.** Before launch, confirm that `PRO_DEFAULT_MODEL` is a current OpenRouter model ID with the price you expect.
 
 Deploying from your machine instead: `npx wrangler login && npm run deploy`, then `npx wrangler secret put ENCRYPTION_KEY`.
