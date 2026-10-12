@@ -1,0 +1,89 @@
+# ⚱ Lich Papers
+
+Search and read any paper on [arXiv](https://arxiv.org), and chat with an AI tutor about it. The tutor runs on the
+[`@moikapy/lich`](https://www.npmjs.com/package/@moikapy/lich) agent harness, with tools for reading the paper's
+full text and for remembering what you've learned across sessions.
+
+- **Search all of arXiv**: free text, field queries (`au:hinton`, `ti:"diffusion"`), category filters, or paste an arXiv id/URL.
+- **Read**: the PDF embedded in the page, or extracted full text (from arXiv's HTML rendering, falling back to the PDF). Select text and click "Ask about selection".
+- **Chat with the paper**: the tutor grounds its answers in the paper. It searches and reads sections as needed and shows each step it took.
+- **Accounts and history**: sign up with email and password. Every conversation is saved, and you can reopen any of them from History.
+- **Cross-session knowledge**: the tutor saves notes to your knowledge base, and you can summarize a session into it. New sessions can **build on** earlier ones, and every chat can search your notes.
+- **Models**:
+  - **Default**: OpenRouter's free router (`openrouter/free`). Users connect their OpenRouter account in one click with [OpenRouter SSO (OAuth PKCE)](https://openrouter.ai/docs/guides/overview/auth/oauth).
+  - **Paid OpenRouter models**: users who have credits on OpenRouter can pick any of its models.
+  - **BYOK**: users can add keys for **OpenAI**, **Anthropic**, and **Ollama** (Ollama Cloud, or their own server over HTTPS).
+  - **Fallback**: if the chosen model fails, lich fails over to the free router automatically.
+
+## Architecture
+
+```
+Browser (React SPA) ──► Cloudflare Worker (Hono, /api/*) ──► D1 (users, keys, sessions, messages, knowledge + FTS5, paper cache)
+                                     │
+                                     ├─► arXiv API / arxiv.org (search, HTML & PDF full text)
+                                     └─► lich Agent ──► OpenRouter / OpenAI / Anthropic / Ollama
+```
+
+One Worker serves the static SPA and the API (`src/worker`). Each chat message builds a lich `Agent` with these tools:
+
+| Tool | What it does |
+| --- | --- |
+| `paper_outline` | Lists the section headings |
+| `search_paper` | BM25 keyword search over chunks of the full text |
+| `read_paper` | Reads a section by name, or a range of characters |
+| `recall_knowledge` | Full-text search over the user's notes and session summaries |
+| `save_knowledge` | Saves a self-contained note for future sessions |
+| `search_arxiv` / `get_arxiv_paper` | Looks up related work |
+
+The provider chain is the user's chosen provider and model first, then `openrouter/free`. The free router uses the
+user's OpenRouter key, or the optional shared server key, which is capped at `FREE_DAILY_LIMIT` messages per user per day.
+Provider keys are encrypted with AES-GCM using `ENCRYPTION_KEY` before they go into D1.
+
+## Local development
+
+```sh
+npm install
+npm run setup:local   # applies D1 migrations locally and writes .dev.vars with a fresh ENCRYPTION_KEY
+npm run dev           # http://localhost:5173
+```
+
+In `.dev.vars`:
+
+- Add `OPENROUTER_API_KEY=sk-or-...` to try the free router without connecting an account.
+- `ALLOW_INSECURE_PROVIDER_URLS=1` is already set, so you can point the Ollama provider at `http://localhost:11434`.
+
+Other commands:
+
+```sh
+npm test            # unit tests (arXiv parsing, paper search, crypto, the lich tool loop, failover)
+npm run typecheck
+npm run build && npm run preview   # run the production build locally in workerd
+```
+
+## Deploy to Cloudflare (auto-deploy from GitHub)
+
+The repo is set up for [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/). After a one-time
+setup, every push to `main` deploys.
+
+1. **Connect the repo.** In the Cloudflare dashboard, go to **Workers & Pages → Create → Import a repository** and pick
+   this repo. The Worker name must match `name` in `wrangler.jsonc` (`lich-papers`).
+2. **Set the build settings.**
+   - Build command: `npm run build`
+   - Deploy command: `npx wrangler deploy && npx wrangler d1 migrations apply lich-papers --remote`
+   - (Optional) Non-production branch deploy command: `npx wrangler versions upload`. This gives PRs preview URLs. Preview builds share the production D1 database.
+3. **Add secrets.** Go to **Worker → Settings → Variables and Secrets**:
+   - `ENCRYPTION_KEY` (**required**). Generate it with `openssl rand -base64 32`. Don't change it later: keys already stored become unreadable.
+   - `OPENROUTER_API_KEY` (optional). A server key so new users can use the free router before connecting OpenRouter.
+   - `FREE_DAILY_LIMIT` (optional, default `50`). The per-user daily cap on the server key.
+4. **Push to `main`.** On the first deploy, wrangler creates the `lich-papers` D1 database, then the migrations create the tables.
+
+Deploying from your machine instead: `npx wrangler login && npm run deploy`, then `npx wrangler secret put ENCRYPTION_KEY`.
+
+OpenRouter SSO needs no app registration. The callback is `https://<your-domain>/openrouter/callback`, and it works on `*.workers.dev` and on custom domains.
+
+## Notes and limits
+
+- **arXiv**: search results are cached for an hour, and extracted paper text is cached in D1 (capped at 500k characters). Please respect arXiv's [API terms](https://info.arxiv.org/help/api/tou.html).
+- **CPU time**: extracting text from a PDF (used when arXiv has no HTML version) is CPU-heavy. The Workers Free plan's 10 ms CPU limit can make it fail, so use Workers Paid for reliable PDF extraction. The HTML path and the chat itself are mostly I/O and fit the free plan.
+- **Ollama**: the app runs on Cloudflare, so it can't reach `localhost`. Use [Ollama Cloud](https://ollama.com) (`https://ollama.com` plus an API key) or expose your server over HTTPS, for example with a Cloudflare Tunnel.
+- **lich on Workers**: lich `0.9.0` reads its own `package.json` at import time, which Workers can't do. `vite.config.ts` inlines the version as a workaround. A fallback for this upstream in lich would let the workaround go.

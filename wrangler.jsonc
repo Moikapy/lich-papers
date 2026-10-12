@@ -1,0 +1,27 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "lich-papers",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "observability": { "enabled": true },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      // No database_id: `wrangler deploy` auto-provisions a D1 database with this name on first deploy.
+      "database_name": "lich-papers",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    "APP_NAME": "Lich Papers",
+    "DEFAULT_MODEL": "openrouter/free"
+  }
+  // Secrets (set with `wrangler secret put`):
+  //   ENCRYPTION_KEY       – required; base64 32-byte key used to encrypt stored API keys
+  //   OPENROUTER_API_KEY   – optional; server key so users can try the free router before connecting OpenRouter
+}
