@@ -114,6 +114,25 @@ label.inline { display: flex; gap: 0.4rem; align-items: center; }
 .summary { margin-top: 0.75rem; border-top: 1px solid var(--border); padding-top: 0.5rem; }
 details summary { cursor: pointer; font-weight: 600; }
 
+/* library */
+.save-menu { position: relative; flex: 0 0 auto; }
+.save-menu button { display: inline-flex; align-items: center; gap: 0.3rem; white-space: nowrap; }
+.save-menu button.saved, .icon-button.saved { color: var(--accent); }
+.save-pop { position: absolute; right: 0; top: calc(100% + 0.35rem); z-index: 20; width: min(18rem, 80vw); display: flex; flex-direction: column; gap: 0.5rem; padding: 0.75rem; }
+.save-pop ul { list-style: none; margin: 0; padding: 0; max-height: 14rem; overflow-y: auto; display: flex; flex-direction: column; gap: 0.3rem; }
+.save-pop label { display: flex; gap: 0.45rem; align-items: center; cursor: pointer; }
+.save-pop input[type="checkbox"] { width: auto; }
+.save-pop form input { flex: 1; min-width: 0; }
+.save-pop form { flex-wrap: nowrap; }
+.icon-button { flex: 0 0 auto; border: none; background: none; padding: 0.25rem; color: var(--muted); }
+.result .row.spread { gap: 0.75rem; }
+.library-tools { flex-wrap: wrap; gap: 0.5rem; }
+.library-tools form { flex-wrap: nowrap; flex: 1 1 16rem; max-width: 26rem; }
+.library-tools form input { flex: 1; min-width: 0; }
+.popular { margin-top: 1.5rem; }
+.popular h2 { font-size: 1.1rem; margin: 0 0 0.6rem; }
+.paper-head .title-row { display: flex; gap: 0.75rem; align-items: flex-start; justify-content: space-between; }
+
 /* paper */
 /* App shell: the paper page fills exactly one screen so the chat composer is always visible. */
 .app { min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; }

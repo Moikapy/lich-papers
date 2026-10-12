@@ -7,6 +7,7 @@ import { SearchPage } from "./pages/Search";
 import { PaperPage } from "./pages/Paper";
 import { SessionsPage } from "./pages/Sessions";
 import { KnowledgePage } from "./pages/Knowledge";
+import { LibraryPage } from "./pages/Library";
 import { SettingsPage } from "./pages/Settings";
 import { AuthPage } from "./pages/Auth";
 import { OpenRouterCallback } from "./pages/OpenRouterCallback";
@@ -31,6 +32,7 @@ export function App() {
   const paperMatch = path.match(/^\/paper\/(.+)$/);
   if (paperMatch) page = <PaperPage key={paperMatch[1]} arxivId={decodeURIComponent(paperMatch[1]!)} sessionId={url.searchParams.get("session")} />;
   else if (path === "/sessions") page = <SessionsPage />;
+  else if (path === "/library") page = <LibraryPage />;
   else if (path === "/knowledge") page = <KnowledgePage />;
   else if (path === "/settings") page = <SettingsPage />;
   else if (path === "/login" || path === "/signup") page = <AuthPage mode={path === "/login" ? "login" : "signup"} />;
@@ -74,6 +76,7 @@ export function App() {
           </Link>
           <nav aria-label="Main">
             <span className="desk">{navLink("/", "Search")}</span>
+            {user && <span className="desk">{navLink("/library", "Library")}</span>}
             {user && <span className="desk">{navLink("/sessions", "History")}</span>}
             {user && <span className="desk">{navLink("/knowledge", "Knowledge")}</span>}
             {user && <span className="desk">{navLink("/settings", "Settings")}</span>}
@@ -106,6 +109,7 @@ export function App() {
         {user && !paperMatch && (
           <nav className="tabbar" aria-label="Sections">
             {tab("/", "Search", <Icon d="M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zm9 16-4.35-4.35" />)}
+            {tab("/library", "Library", <Icon d="M6 3h12v18l-6-4.5L6 21z" />)}
             {tab("/sessions", "History", <Icon d="M12 7v5l3 2M3 12a9 9 0 1 0 3-6.7M3 4v4h4" />)}
             {tab("/knowledge", "Knowledge", <Icon d="M4 5a2 2 0 0 1 2-2h12v16H6a2 2 0 0 0-2 2V5zm0 16a2 2 0 0 1 2-2h12v2" />)}
             {tab("/settings", "Settings", <Icon d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />)}

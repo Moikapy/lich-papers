@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
-import { api, enc, type PaperMeta } from "../api";
+import { api, enc, type PaperMeta, type PopularPaper } from "../api";
+import { useAuth } from "../auth";
 import { Link } from "../components/Link";
+import { BookmarkToggle } from "../components/SaveMenu";
 import { navigate, useLocation } from "../router";
 
 const CATEGORIES: [string, string][] = [
@@ -28,8 +30,40 @@ export function SearchPage() {
   const [data, setData] = useState<{ total: number; papers: PaperMeta[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const { user } = useAuth();
+  const [savedIds, setSavedIds] = useState<Set<string> | null>(null);
+  const [popular, setPopular] = useState<PopularPaper[]>([]);
 
   useEffect(() => setDraft(q), [q]);
+
+  useEffect(() => {
+    if (!user) return setSavedIds(null);
+    api<{ ids: string[] }>("/library/ids")
+      .then((r) => setSavedIds(new Set(r.ids)))
+      .catch(() => setSavedIds(null));
+  }, [user]);
+
+  useEffect(() => {
+    api<{ papers: PopularPaper[] }>("/popular")
+      .then((r) => setPopular(r.papers))
+      .catch(() => setPopular([]));
+  }, []);
+
+  const bookmark = (id: string) =>
+    savedIds && (
+      <BookmarkToggle
+        arxivId={id}
+        saved={savedIds.has(id)}
+        onChange={(saved) =>
+          setSavedIds((ids) => {
+            const next = new Set(ids);
+            if (saved) next.add(id);
+            else next.delete(id);
+            return next;
+          })
+        }
+      />
+    );
 
   useEffect(() => {
     if (!q && !cat) {
@@ -98,6 +132,36 @@ export function SearchPage() {
         </select>
       </div>
 
+      {!q && !cat && popular.length > 0 && (
+        <section className="popular" aria-labelledby="popular-heading">
+          <h2 id="popular-heading">Popular this month</h2>
+          <ol className="results">
+            {popular.map((p) => (
+              <li key={p.arxiv_id} className="result">
+                <div className="row spread">
+                  <Link href={`/paper/${enc(p.arxiv_id)}`} className="title">
+                    {p.title}
+                  </Link>
+                  {bookmark(p.arxiv_id)}
+                </div>
+                <div className="byline">
+                  {p.authors.slice(0, 4).join(", ")}
+                  {p.authors.length > 4 ? ` +${p.authors.length - 4}` : ""}
+                </div>
+                <div className="meta">
+                  <span>{p.readers} readers</span>
+                  <span>arXiv:{p.arxiv_id}</span>
+                  {p.categories.slice(0, 2).map((c) => (
+                    <span key={c} className="tag">
+                      {c}
+                    </span>
+                  ))}
+                </div>
+              </li>
+            ))}
+          </ol>
+        </section>
+      )}
       {error && <p className="error">{error}</p>}
       {loading && <p className="muted">Searching arXiv…</p>}
       {data && !loading && (
@@ -106,9 +170,12 @@ export function SearchPage() {
           <ul className="results">
             {data.papers.map((p) => (
               <li key={p.arxiv_id} className="result">
-                <Link href={`/paper/${enc(p.arxiv_id)}`} className="title">
-                  {p.title}
-                </Link>
+                <div className="row spread">
+                  <Link href={`/paper/${enc(p.arxiv_id)}`} className="title">
+                    {p.title}
+                  </Link>
+                  {bookmark(p.arxiv_id)}
+                </div>
                 <div className="byline">
                   {p.authors.slice(0, 6).join(", ")}
                   {p.authors.length > 6 ? ` +${p.authors.length - 6}` : ""}

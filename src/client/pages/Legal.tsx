@@ -173,7 +173,8 @@ function Privacy({ app, operator, contact }: Ctx) {
           accepted these policies.
         </li>
         <li>
-          <strong>What you create:</strong> your chat conversations, notes, session summaries, and settings such as your default model.
+          <strong>What you create:</strong> your chat conversations, notes, session summaries, papers you save and your collections, and settings
+          such as your default model.
         </li>
         <li>
           <strong>API keys you add:</strong> stored encrypted, and used only to run your requests.
@@ -194,6 +195,10 @@ function Privacy({ app, operator, contact }: Ctx) {
       <h2>Why we use it</h2>
       <ul>
         <li>To provide the service you asked for: your account, saved conversations, knowledge base, and AI answers (performance of a contract).</li>
+        <li>
+          To show which papers are popular: the home page lists papers that several people saved or started a conversation about in the last
+          30 days, with a reader count. Only totals from at least two people are shown, never who they are (legitimate interests).
+        </li>
         <li>To keep the service secure and prevent abuse, such as rate-limiting logins (legitimate interests).</li>
         <li>To bill Pro subscriptions and meet legal and tax obligations (contract and legal obligation).</li>
       </ul>
