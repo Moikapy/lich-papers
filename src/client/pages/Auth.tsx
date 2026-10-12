@@ -18,6 +18,7 @@ export function AuthPage({ mode }: { mode: "login" | "signup" }) {
   const { setUser } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [accepted, setAccepted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const next = new URLSearchParams(location.search).get("next") || (mode === "signup" ? "/settings?welcome=1" : "/");
@@ -27,7 +28,7 @@ export function AuthPage({ mode }: { mode: "login" | "signup" }) {
     setBusy(true);
     setError(null);
     try {
-      const r = await api<{ user: User }>(`/auth/${mode}`, { method: "POST", json: { email, password } });
+      const r = await api<{ user: User }>(`/auth/${mode}`, { method: "POST", json: mode === "signup" ? { email, password, accept_terms: accepted } : { email, password } });
       try {
         localStorage.removeItem("lp_model");
       } catch {}
@@ -64,6 +65,22 @@ export function AuthPage({ mode }: { mode: "login" | "signup" }) {
             required
           />
         </label>
+        {mode === "signup" && (
+          <label className="inline consent">
+            <input type="checkbox" checked={accepted} onChange={(e) => setAccepted(e.target.checked)} required />
+            <span>
+              I'm at least 13 (16 in the EU/UK) and agree to the{" "}
+              <Link href="/terms" target="_blank">
+                Terms
+              </Link>{" "}
+              and{" "}
+              <Link href="/privacy" target="_blank">
+                Privacy Policy
+              </Link>
+              .
+            </span>
+          </label>
+        )}
         {error && <p className="error">{error}</p>}
         <button className="primary" disabled={busy}>
           {busy ? "…" : mode === "login" ? "Sign in" : "Create account"}

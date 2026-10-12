@@ -5,7 +5,7 @@ Search and read any paper on [arXiv](https://arxiv.org), and chat with an AI tut
 full text and for remembering what you've learned across sessions.
 
 - **Search all of arXiv**: free text, field queries (`au:hinton`, `ti:"diffusion"`), category filters, or paste an arXiv id/URL.
-- **Read**: the PDF embedded in the page, or extracted full text (from arXiv's HTML rendering, falling back to the PDF). Select text and click "Ask about selection".
+- **Read**: full text in the app for openly licensed papers (CC BY, CC BY-SA, CC0), with attribution; otherwise the abstract with links to arXiv. PDFs open on arXiv.
 - **Chat with the paper**: the tutor grounds its answers in the paper. It searches and reads sections as needed and shows each step it took.
 - **Accounts and history**: sign up with email and password. Every conversation is saved, and you can reopen any of them from History.
 - **Cross-session knowledge**: the tutor saves notes to your knowledge base, and you can summarize a session into it. New sessions can **build on** earlier ones, and every chat can search your notes.
@@ -105,9 +105,22 @@ Deploying from your machine instead: `npx wrangler login && npm run deploy`, the
 
 OpenRouter SSO needs no app registration. The callback is `https://<your-domain>/openrouter/callback`, and it works on `*.workers.dev` and on custom domains.
 
+## Legal pages
+
+The Terms, Privacy, Refunds and Copyright policies live at `/terms`, `/privacy`, `/refunds` and `/copyright`. They're written for an individual running the app as a hobby project.
+
+- **Fill them in.** Set the plain vars `OPERATOR_NAME`, `CONTACT_EMAIL` and `GOVERNING_LAW` in the dashboard. Until `CONTACT_EMAIL` is set, the pages show "[contact email not configured]".
+- **Signup records consent.** Signup requires accepting the Terms and Privacy Policy, and the account stores the date and terms version.
+- **Data rights.** In Settings, users can download all their data and delete their account; deletion also cancels Stripe and removes the Pro key.
+- **Get them reviewed.** These are a starting point, not legal advice. Have a lawyer review them before you rely on them.
+
 ## Notes and limits
 
-- **arXiv**: search results are cached for an hour, and extracted paper text is cached in D1 (capped at 500k characters). Please respect arXiv's [API terms](https://info.arxiv.org/help/api/tou.html).
+- **arXiv content and licensing**: the app follows arXiv's [API terms](https://info.arxiv.org/help/api/tou.html) and [bulk-data guidance](https://info.arxiv.org/help/bulk_data.html).
+  - **Polite access**: every automated request goes to `export.arxiv.org`, through a shared throttle of one request every 3 seconds (the `arxiv_gate` table). Search results are cached for an hour.
+  - **Licenses**: each paper's license is read from arXiv's OAI-PMH endpoint and cached for 30 days.
+  - **What the reader shows**: full text only for CC BY, CC BY-SA and CC0/public-domain papers, with attribution. Every other paper shows its abstract (which is CC0) and links to arXiv. PDFs always open on arXiv; the app doesn't host or serve copies.
+  - **Text for the tutor**: fetched on demand and kept for at most 24 hours. A daily cron (`17 4 * * *`) clears expired text.
 - **CPU time**: extracting text from a PDF (used when arXiv has no HTML version) is CPU-heavy. The Workers Free plan's 10 ms CPU limit can make it fail, so use Workers Paid for reliable PDF extraction. The HTML path and the chat itself are mostly I/O and fit the free plan.
 - **Ollama**: the app runs on Cloudflare, so it can't reach `localhost`. Use [Ollama Cloud](https://ollama.com) (`https://ollama.com` plus an API key) or expose your server over HTTPS, for example with a Cloudflare Tunnel.
 - **lich on Workers**: lich `0.9.0` reads its own `package.json` at import time, which Workers can't do. `vite.config.ts` inlines the version as a workaround. A fallback for this upstream in lich would let the workaround go.

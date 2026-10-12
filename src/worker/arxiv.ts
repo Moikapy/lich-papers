@@ -2,7 +2,10 @@ import { XMLParser } from "fast-xml-parser";
 import { HTTPException } from "hono/http-exception";
 import type { Ctx, Env } from "./env";
 
-const API = "https://export.arxiv.org/api/query";
+/** arXiv's mirror for programmatic access; all automated requests go here, not arxiv.org. */
+const EXPORT = "https://export.arxiv.org";
+const API = `${EXPORT}/api/query`;
+const OAI = `${EXPORT}/oai2`;
 const UA = "LichPapers/0.1 (+https://github.com/moikapy/lich-papers)";
 /** D1 rows top out around 2 MB; keep extracted text comfortably below that. */
 export const MAX_BODY_CHARS = 500_000;
@@ -100,12 +103,44 @@ export function parseAtom(text: string): SearchResult {
   };
 }
 
-async function cachedFetch(url: string, ttlSeconds: number, ctx?: Ctx): Promise<Response> {
+// ---------------------------------------------------------------- polite arXiv access
+
+/**
+ * arXiv asks programmatic clients to use export.arxiv.org, make one request at a time, and wait
+ * about 3 seconds between requests. This gate enforces that across every Worker instance with a
+ * single D1 row: each request reserves the next free slot and waits for it.
+ */
+const ARXIV_INTERVAL_MS = 3000;
+const ARXIV_MAX_WAIT_MS = 15_000;
+
+async function arxivSlot(env: Env): Promise<void> {
+  const now = Date.now();
+  const row = await env.DB.prepare(
+    "UPDATE arxiv_gate SET next_at = MAX(next_at, ?) + ? WHERE id = 1 AND next_at < ? RETURNING next_at",
+  )
+    .bind(now, ARXIV_INTERVAL_MS, now + ARXIV_MAX_WAIT_MS)
+    .first<{ next_at: number }>();
+  if (!row) throw new HTTPException(503, { message: "arXiv is busy right now. Try again in a few seconds." });
+  const wait = row.next_at - ARXIV_INTERVAL_MS - now;
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+}
+
+async function arxivFetch(env: Env, url: string): Promise<Response> {
+  await arxivSlot(env);
+  try {
+    return await fetch(url, { headers: { "user-agent": UA }, redirect: "follow" });
+  } catch (err) {
+    console.error("arXiv fetch failed", url, err);
+    throw new HTTPException(502, { message: "arXiv is unreachable right now. Try again in a moment." });
+  }
+}
+
+async function cachedArxivFetch(env: Env, url: string, ttlSeconds: number, ctx?: Ctx): Promise<Response> {
   const cache = (caches as unknown as { default: Cache }).default;
   const key = new Request(url);
   const hit = await cache.match(key);
   if (hit) return hit;
-  const res = await fetch(url, { headers: { "user-agent": UA } });
+  const res = await arxivFetch(env, url);
   if (res.ok) {
     const copy = new Response(res.clone().body, res);
     copy.headers.set("cache-control", `public, max-age=${ttlSeconds}`);
@@ -115,7 +150,7 @@ async function cachedFetch(url: string, ttlSeconds: number, ctx?: Ctx): Promise<
   return res;
 }
 
-export async function searchArxiv(p: SearchParams, ctx?: Ctx): Promise<SearchResult> {
+export async function searchArxiv(env: Env, p: SearchParams, ctx?: Ctx): Promise<SearchResult> {
   const id = parseArxivId(p.q);
   const params = new URLSearchParams({
     start: String(p.start ?? 0),
@@ -128,16 +163,61 @@ export async function searchArxiv(p: SearchParams, ctx?: Ctx): Promise<SearchRes
     params.set("sortBy", p.sort ?? "relevance");
     params.set("sortOrder", "descending");
   }
-  let res: Response;
-  try {
-    res = await cachedFetch(`${API}?${params}`, 3600, ctx);
-  } catch (err) {
-    console.error("arXiv fetch failed", err);
-    throw new HTTPException(502, { message: "arXiv is unreachable right now. Try again in a moment." });
-  }
+  const res = await cachedArxivFetch(env, `${API}?${params}`, 3600, ctx);
   if (!res.ok) throw new HTTPException(502, { message: `arXiv API returned ${res.status}` });
   return parseAtom(await res.text());
 }
+
+// ---------------------------------------------------------------- licenses
+
+/** arXiv's default license: distribution by arXiv only. */
+export const ARXIV_DEFAULT_LICENSE = "http://arxiv.org/licenses/nonexclusive-distrib/1.0/";
+
+/** Extracts the license URI from an OAI-PMH `metadataPrefix=arXiv` record; null when absent. */
+export function parseOaiLicense(xmlText: string): string | null {
+  const m = xmlText.match(/<license>\s*([^<\s]+)\s*<\/license>/);
+  return m ? m[1]! : null;
+}
+
+/**
+ * Whether we may display a paper's full text in the app (a commercial service):
+ * CC BY, CC BY-SA, CC0 and public-domain dedications. NonCommercial and arXiv's default
+ * license don't allow it, so those papers get the abstract and links to arXiv instead.
+ */
+export function isOpenLicense(uri: string | null | undefined): boolean {
+  if (!uri) return false;
+  const u = uri.toLowerCase();
+  if (/creativecommons\.org\/publicdomain\//.test(u) || /creativecommons\.org\/licenses\/publicdomain/.test(u)) return true;
+  const m = u.match(/creativecommons\.org\/licenses\/([a-z-]+)\//);
+  return !!m && (m[1] === "by" || m[1] === "by-sa");
+}
+
+/** Human-readable name for a license URI. */
+export function licenseLabel(uri: string | null | undefined): string {
+  if (!uri || uri.includes("arxiv.org/licenses")) return "arXiv license (all rights reserved by the authors)";
+  const u = uri.toLowerCase();
+  if (u.includes("publicdomain/zero")) return "CC0 1.0 (public domain)";
+  if (u.includes("publicdomain")) return "Public domain";
+  const m = u.match(/licenses\/([a-z-]+)\/([\d.]+)/);
+  return m ? `CC ${m[1]!.toUpperCase()} ${m[2]}` : uri;
+}
+
+const LICENSE_RECHECK_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** The paper's license URI (null = arXiv default), from OAI-PMH, cached in D1 for 30 days. */
+export async function getPaperLicense(env: Env, id: string): Promise<string | null> {
+  const row = await env.DB.prepare("SELECT license, license_checked_at FROM papers WHERE arxiv_id = ?")
+    .bind(id)
+    .first<{ license: string | null; license_checked_at: number | null }>();
+  if (row?.license_checked_at && Date.now() - row.license_checked_at < LICENSE_RECHECK_MS) return row.license;
+  const res = await arxivFetch(env, `${OAI}?verb=GetRecord&identifier=oai:arXiv.org:${encodeURIComponent(id)}&metadataPrefix=arXiv`);
+  if (!res.ok) return row?.license ?? null; // unknown → treated as not open
+  const license = parseOaiLicense(await res.text());
+  await env.DB.prepare("UPDATE papers SET license = ?, license_checked_at = ? WHERE arxiv_id = ?").bind(license, Date.now(), id).run();
+  return license;
+}
+
+// ---------------------------------------------------------------- papers
 
 interface PaperRow {
   arxiv_id: string;
@@ -155,15 +235,15 @@ function rowToPaper(r: PaperRow): Paper {
   return { ...r, authors: JSON.parse(r.authors), categories: JSON.parse(r.categories) };
 }
 
-/** Paper metadata, cached in D1. Body is not loaded (see getPaperWithBody). */
+/** Paper metadata (CC0), cached in D1. Body is not loaded (see getPaperWithBody). */
 export async function getPaper(env: Env, id: string, ctx?: Ctx): Promise<Paper | null> {
   const row = await env.DB.prepare(
-    "SELECT arxiv_id, title, authors, abstract, categories, published, updated, NULL AS body, body_source FROM papers WHERE arxiv_id = ?",
+    "SELECT arxiv_id, title, authors, abstract, categories, published, updated, NULL AS body, NULL AS body_source FROM papers WHERE arxiv_id = ?",
   )
     .bind(id)
     .first<PaperRow>();
   if (row) return rowToPaper(row);
-  const { papers } = await searchArxiv({ q: id }, ctx);
+  const { papers } = await searchArxiv(env, { q: id }, ctx);
   const meta = papers.find((p) => p.arxiv_id === id);
   if (!meta) return null;
   await env.DB.prepare(
@@ -175,50 +255,69 @@ export async function getPaper(env: Env, id: string, ctx?: Ctx): Promise<Paper |
   return { ...meta, body: null, body_source: null };
 }
 
-/** Paper with full text, extracting and caching it on first use. */
+/** How long extracted full text is kept before it's dropped and re-fetched from arXiv. */
+export const BODY_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Paper with full text for the tutor. The text is fetched from arXiv on demand and kept only
+ * briefly (BODY_TTL_MS) so answers stay fast without keeping a permanent copy.
+ */
 export async function getPaperWithBody(env: Env, id: string, ctx?: Ctx): Promise<Paper | null> {
   const meta = await getPaper(env, id, ctx);
   if (!meta) return null;
-  const row = await env.DB.prepare("SELECT body, body_source FROM papers WHERE arxiv_id = ?")
+  const now = Date.now();
+  const row = await env.DB.prepare("SELECT body, body_source, body_expires_at FROM papers WHERE arxiv_id = ?")
     .bind(id)
-    .first<{ body: string | null; body_source: Paper["body_source"] }>();
-  if (row?.body && row.body_source !== "abstract") return { ...meta, body: row.body, body_source: row.body_source };
+    .first<{ body: string | null; body_source: Paper["body_source"]; body_expires_at: number | null }>();
+  if (row?.body && row.body_source !== "abstract" && (row.body_expires_at ?? 0) > now) {
+    return { ...meta, body: row.body, body_source: row.body_source };
+  }
 
   let body: string | null = null;
   let source: Paper["body_source"] = "abstract";
   try {
-    body = await fetchHtmlText(id);
+    body = await fetchHtmlText(env, id);
     if (body) source = "html";
   } catch (err) {
     console.warn("html extraction failed", id, err);
   }
   if (!body) {
     try {
-      body = await fetchPdfText(id);
+      body = await fetchPdfText(env, id);
       if (body) source = "pdf";
     } catch (err) {
       console.warn("pdf extraction failed", id, err);
     }
   }
   if (!body) {
-    // Don't persist the fallback: a transient arXiv failure must not pin the abstract forever.
+    // Don't persist the fallback: a transient arXiv failure must not pin the abstract.
     return { ...meta, body: meta.abstract, body_source: "abstract" };
   }
   body = body.slice(0, MAX_BODY_CHARS);
-  await env.DB.prepare("UPDATE papers SET body = ?, body_source = ? WHERE arxiv_id = ?").bind(body, source, id).run();
+  await env.DB.prepare("UPDATE papers SET body = ?, body_source = ?, body_expires_at = ? WHERE arxiv_id = ?")
+    .bind(body, source, now + BODY_TTL_MS, id)
+    .run();
   return { ...meta, body, body_source: source };
 }
 
+/** Drops expired full text (run daily by the cron trigger). */
+export async function purgeExpiredBodies(env: Env): Promise<number> {
+  const res = await env.DB.prepare("UPDATE papers SET body = NULL, body_source = NULL, body_expires_at = NULL WHERE body IS NOT NULL AND (body_expires_at IS NULL OR body_expires_at < ?)")
+    .bind(Date.now())
+    .run();
+  return res.meta?.changes ?? 0;
+}
+
 /** arXiv's LaTeX→HTML rendering (available for most papers since late 2023). */
-async function fetchHtmlText(id: string): Promise<string | null> {
-  const res = await fetch(`https://arxiv.org/html/${id}`, { headers: { "user-agent": UA }, redirect: "follow" });
+async function fetchHtmlText(env: Env, id: string): Promise<string | null> {
+  const res = await arxivFetch(env, `${EXPORT}/html/${id}`);
   if (!res.ok || !(res.headers.get("content-type") ?? "").includes("html")) return null;
   const text = await htmlToText(res);
   return text.length > 2000 ? text : null;
 }
 
-async function fetchPdfText(id: string): Promise<string | null> {
-  const res = await fetch(`https://arxiv.org/pdf/${id}`, { headers: { "user-agent": UA }, redirect: "follow" });
+async function fetchPdfText(env: Env, id: string): Promise<string | null> {
+  const res = await arxivFetch(env, `${EXPORT}/pdf/${id}`);
   if (!res.ok) return null;
   const buf = new Uint8Array(await res.arrayBuffer());
   const { extractText, getDocumentProxy } = await import("unpdf");

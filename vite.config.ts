@@ -26,7 +26,7 @@ const CSP = [
   "img-src 'self' data:",
   "style-src 'self' 'unsafe-inline'",
   "font-src 'self' data:",
-  "frame-src 'self'",
+  "frame-src 'none'",
   "form-action 'self'",
   "object-src 'none'",
   "base-uri 'self'",

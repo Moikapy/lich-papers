@@ -3,12 +3,12 @@ import { HTTPException } from "hono/http-exception";
 import { streamSSE } from "hono/streaming";
 import type { Message, ProviderConfig } from "@moikapy/lich";
 import { clientIp, endSession, loadUser, currentUser, rateLimit, requireUser, sameOrigin, startSession } from "./auth";
-import { getPaper, getPaperWithBody, parseArxivId, searchArxiv, type Paper } from "./arxiv";
+import { getPaper, getPaperLicense, getPaperWithBody, isOpenLicense, licenseLabel, parseArxivId, purgeExpiredBodies, searchArxiv, type Paper } from "./arxiv";
 import { hashPassword, verifyPassword } from "./crypto";
 import { isPro, PROVIDERS, type AppEnv, type ChatProvider, type Ctx, type Env, type ProviderId, type User } from "./env";
 import { addKnowledge, assertCanAddNote, listKnowledge, NoteLimitError, searchKnowledge } from "./knowledge";
 import { paperTools, runChat, safeProviderMessage, summarize, systemPrompt, type Budget } from "./agent";
-import { applyComp, loadProKey, proAllowance, proCapUsd, stripe, syncSubscription, verifyStripeSignature, type StripeSubscription } from "./billing";
+import { applyComp, loadProKey, proAllowance, revokeProKey, proCapUsd, stripe, syncSubscription, verifyStripeSignature, type StripeSubscription } from "./billing";
 import {
   exchangeOpenRouterCode,
   freeUsageRemaining,
@@ -81,8 +81,25 @@ app.get("/me", async (c) => {
   return c.json({ user });
 });
 
+/** Bump when the Terms or Privacy Policy change materially; recorded per user at signup. */
+const TERMS_VERSION = "2026-10-12";
+
+/** Public site details the legal pages render. */
+app.get("/site", (c) =>
+  c.json({
+    app_name: c.env.APP_NAME,
+    operator: c.env.OPERATOR_NAME || null,
+    contact_email: c.env.CONTACT_EMAIL || null,
+    governing_law: c.env.GOVERNING_LAW || null,
+    terms_version: TERMS_VERSION,
+    price_cents: Number(c.env.PRO_PRICE_CENTS ?? 1000),
+    monthly_cap_usd: proCapUsd(c.env),
+  }),
+);
+
 app.post("/auth/signup", async (c) => {
-  const { email, password } = await json<{ email: string; password: string }>(c);
+  const { email, password, accept_terms } = await json<{ email: string; password: string; accept_terms: boolean }>(c);
+  if (accept_terms !== true) throw new HTTPException(400, { message: "Please accept the Terms of Service and Privacy Policy" });
   const mail = String(email ?? "").trim().toLowerCase();
   if (mail.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail)) throw new HTTPException(400, { message: "Enter a valid email" });
   if (String(password ?? "").length < 8) throw new HTTPException(400, { message: "Password must be at least 8 characters" });
@@ -91,8 +108,9 @@ app.post("/auth/signup", async (c) => {
   if (exists) throw new HTTPException(409, { message: "An account with that email already exists" });
   const id = crypto.randomUUID();
   try {
-    await c.env.DB.prepare("INSERT INTO users (id, email, password_hash, created_at) VALUES (?, ?, ?, ?)")
-      .bind(id, mail, await hashPassword(String(password)), Date.now())
+    const now = Date.now();
+    await c.env.DB.prepare("INSERT INTO users (id, email, password_hash, created_at, terms_accepted_at, terms_version) VALUES (?, ?, ?, ?, ?, ?)")
+      .bind(id, mail, await hashPassword(String(password)), now, now, TERMS_VERSION)
       .run();
   } catch (err) {
     // Lost the SELECT-then-INSERT race against the UNIQUE(email) constraint.
@@ -134,6 +152,7 @@ app.get("/search", async (c) => {
   if (!q && !category) return c.json({ total: 0, start: 0, papers: [] });
   const sort = c.req.query("sort");
   const result = await searchArxiv(
+    c.env,
     {
       q,
       category,
@@ -153,30 +172,25 @@ app.get("/papers/:id", async (c) => {
   return c.json({ paper: meta });
 });
 
+/**
+ * Full text for the reader. Shown only when the paper's license allows it (CC BY, CC BY-SA, CC0 /
+ * public domain), with attribution. Every other paper gets its abstract and links to arXiv; the
+ * tutor can still read those papers to answer questions, but the app doesn't republish them.
+ */
 app.get("/papers/:id/text", async (c) => {
-  const paper = await getPaperWithBody(c.env, arxivIdParam(c.req.param("id")), c.executionCtx);
-  if (!paper) throw new HTTPException(404, { message: "Paper not found on arXiv" });
-  return c.json({ body: paper.body, source: paper.body_source });
-});
-
-/** Same-origin PDF proxy so the reader can embed it regardless of arXiv's framing headers. */
-app.get("/papers/:id/pdf", async (c) => {
   const id = arxivIdParam(c.req.param("id"));
-  const res = await fetch(`https://arxiv.org/pdf/${id}`, {
-    headers: { "user-agent": "LichPapers/0.1 (+https://github.com/moikapy/lich-papers)" },
-    cf: { cacheTtlByStatus: { "200-299": 86_400, "400-599": 0 }, cacheEverything: true },
-  } as RequestInit).catch(() => {
-    throw new HTTPException(502, { message: "arXiv is unreachable right now" });
-  });
-  if (res.status === 404) throw new HTTPException(404, { message: "Paper not found on arXiv" });
-  if (!res.ok || !res.body) throw new HTTPException(502, { message: `arXiv returned ${res.status}` });
-  return new Response(res.body, {
-    headers: {
-      "content-type": "application/pdf",
-      "content-disposition": `inline; filename="${id.replace("/", "_")}.pdf"`,
-      "cache-control": "public, max-age=86400",
-    },
-  });
+  const meta = await getPaper(c.env, id, c.executionCtx);
+  if (!meta) throw new HTTPException(404, { message: "Paper not found on arXiv" });
+  const license = await getPaperLicense(c.env, id);
+  const links = {
+    abs_url: `https://arxiv.org/abs/${id}`,
+    html_url: `https://arxiv.org/html/${id}`,
+    pdf_url: `https://arxiv.org/pdf/${id}`,
+  };
+  const licenseInfo = { license, license_label: licenseLabel(license) };
+  if (!isOpenLicense(license)) return c.json({ open: false, ...licenseInfo, ...links });
+  const paper = await getPaperWithBody(c.env, id, c.executionCtx);
+  return c.json({ open: true, body: paper!.body, source: paper!.body_source, ...licenseInfo, ...links });
 });
 
 // ---------------------------------------------------------------- settings / BYOK
@@ -570,6 +584,75 @@ app.delete("/knowledge/:id", requireUser, async (c) => {
   return c.json({ ok: true });
 });
 
+// ---------------------------------------------------------------- account: export & deletion
+
+/** Everything stored about the user, as JSON (data portability). API keys are listed, never included. */
+app.get("/account/export", requireUser, async (c) => {
+  const user = currentUser(c);
+  const db = c.env.DB;
+  const [account, sessions, messages, knowledge, keys, usage] = await Promise.all([
+    db.prepare("SELECT id, email, plan, plan_status, plan_renews_at, default_provider, default_model, created_at, terms_accepted_at, terms_version FROM users WHERE id = ?").bind(user.id).first(),
+    db.prepare("SELECT id, arxiv_id, title, summary, builds_on, created_at, updated_at FROM chat_sessions WHERE user_id = ? ORDER BY created_at").bind(user.id).all(),
+    db.prepare(
+      "SELECT m.session_id, m.role, m.content, m.meta, m.created_at FROM chat_messages m JOIN chat_sessions s ON s.id = m.session_id WHERE s.user_id = ? ORDER BY m.id",
+    ).bind(user.id).all(),
+    db.prepare("SELECT id, session_id, arxiv_id, kind, content, tags, created_at FROM knowledge WHERE user_id = ? ORDER BY created_at").bind(user.id).all(),
+    db.prepare("SELECT provider, base_url, source, updated_at FROM provider_keys WHERE user_id = ?").bind(user.id).all(),
+    db.prepare("SELECT billed_to, provider, model, prompt_tokens, completion_tokens, created_at FROM usage_events WHERE user_id = ? ORDER BY created_at").bind(user.id).all(),
+  ]);
+  const body = JSON.stringify(
+    {
+      exported_at: new Date().toISOString(),
+      account,
+      chat_sessions: sessions.results,
+      chat_messages: messages.results,
+      knowledge: knowledge.results,
+      connected_providers: keys.results,
+      usage: usage.results,
+    },
+    null,
+    2,
+  );
+  return new Response(body, {
+    headers: { "content-type": "application/json", "content-disposition": `attachment; filename="lich-papers-export.json"` },
+  });
+});
+
+/**
+ * Permanently deletes the account: cancels any Stripe subscription, deletes the Pro key and the
+ * Stripe customer, then the user row (everything else cascades). Requires the password.
+ */
+app.post("/account/delete", requireUser, async (c) => {
+  const user = currentUser(c);
+  const { password } = await json<{ password: string }>(c);
+  await rateLimit(c, `delete:${user.id}`, 5, 15 * 60_000);
+  const row = await c.env.DB.prepare("SELECT password_hash, stripe_customer_id FROM users WHERE id = ?")
+    .bind(user.id)
+    .first<{ password_hash: string; stripe_customer_id: string | null }>();
+  if (!row || !(await verifyPassword(String(password ?? ""), row.password_hash))) {
+    throw new HTTPException(401, { message: "Wrong password" });
+  }
+  // Deleting the Stripe customer also cancels its subscriptions immediately.
+  if (row.stripe_customer_id && c.env.STRIPE_SECRET_KEY) {
+    await stripe(c.env, "DELETE", `customers/${row.stripe_customer_id}`);
+  }
+  await revokeProKey(c.env, user.id);
+  const ownSessions = "SELECT id FROM chat_sessions WHERE user_id = ?";
+  await c.env.DB.batch([
+    c.env.DB.prepare(`DELETE FROM chat_messages WHERE session_id IN (${ownSessions})`).bind(user.id),
+    c.env.DB.prepare("DELETE FROM knowledge WHERE user_id = ?").bind(user.id),
+    c.env.DB.prepare("DELETE FROM chat_sessions WHERE user_id = ?").bind(user.id),
+    c.env.DB.prepare("DELETE FROM provider_keys WHERE user_id = ?").bind(user.id),
+    c.env.DB.prepare("DELETE FROM pro_keys WHERE user_id = ?").bind(user.id),
+    c.env.DB.prepare("DELETE FROM usage_events WHERE user_id = ?").bind(user.id),
+    c.env.DB.prepare("DELETE FROM free_usage WHERE user_id = ?").bind(user.id),
+    c.env.DB.prepare("DELETE FROM auth_sessions WHERE user_id = ?").bind(user.id),
+    c.env.DB.prepare("DELETE FROM users WHERE id = ?").bind(user.id),
+  ]);
+  await endSession(c);
+  return c.json({ ok: true });
+});
+
 // ---------------------------------------------------------------- billing (Stripe)
 
 app.post("/billing/checkout", requireUser, async (c) => {
@@ -601,6 +684,11 @@ app.post("/billing/checkout", requireUser, async (c) => {
     ],
     subscription_data: { metadata: { user_id: user.id } },
     allow_promotion_codes: true,
+    custom_text: {
+      submit: {
+        message: `Renews monthly until you cancel. Cancel anytime from Settings; no refunds for partial months. By subscribing you agree to the Terms at ${origin}/terms.`,
+      },
+    },
     success_url: `${origin}/settings?pro=success`,
     cancel_url: `${origin}/settings?pro=cancelled`,
   });
@@ -657,4 +745,10 @@ app.post("/billing/webhook", async (c) => {
 
 app.all("*", (c) => c.json({ error: "Not found" }, 404));
 
-export default app;
+export default {
+  fetch: app.fetch,
+  /** Daily cron: drop full text past its short cache lifetime. */
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(purgeExpiredBodies(env).then((n) => console.log(`purged ${n} expired paper bodies`)));
+  },
+} satisfies ExportedHandler<Env>;

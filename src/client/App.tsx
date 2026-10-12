@@ -10,6 +10,9 @@ import { KnowledgePage } from "./pages/Knowledge";
 import { SettingsPage } from "./pages/Settings";
 import { AuthPage } from "./pages/Auth";
 import { OpenRouterCallback } from "./pages/OpenRouterCallback";
+import { LegalPage, type LegalDoc } from "./pages/Legal";
+
+const LEGAL_PATHS: Record<string, LegalDoc> = { "/terms": "terms", "/privacy": "privacy", "/refunds": "refunds", "/copyright": "copyright" };
 
 export function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -32,6 +35,7 @@ export function App() {
   else if (path === "/settings") page = <SettingsPage />;
   else if (path === "/login" || path === "/signup") page = <AuthPage mode={path === "/login" ? "login" : "signup"} />;
   else if (path === "/openrouter/callback") page = <OpenRouterCallback />;
+  else if (LEGAL_PATHS[path]) page = <LegalPage key={path} doc={LEGAL_PATHS[path]!} />;
   else page = <SearchPage />;
 
   const logout = async () => {
@@ -90,6 +94,15 @@ export function App() {
         <main id="main" tabIndex={-1} className={paperMatch ? "main wide" : "main"}>
           {page}
         </main>
+        {!paperMatch && (
+          <footer className="site-footer">
+            <Link href="/terms">Terms</Link>
+            <Link href="/privacy">Privacy</Link>
+            <Link href="/refunds">Refunds</Link>
+            <Link href="/copyright">Copyright</Link>
+            <span className="muted">Not affiliated with arXiv</span>
+          </footer>
+        )}
         {user && !paperMatch && (
           <nav className="tabbar" aria-label="Sections">
             {tab("/", "Search", <Icon d="M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zm9 16-4.35-4.35" />)}

@@ -27,6 +27,12 @@ export interface Env {
    * emails aren't verified, so anyone could register an address first.
    */
   COMP_PRO_USER_IDS?: string;
+  /** Shown in the Terms and Privacy Policy. */
+  OPERATOR_NAME?: string;
+  /** Contact address for privacy requests and takedowns, shown in the policies. */
+  CONTACT_EMAIL?: string;
+  /** Governing law for the Terms, e.g. "the State of California, USA". */
+  GOVERNING_LAW?: string;
   /** Dev/testing only: override the Stripe and OpenRouter management API base URLs. */
   STRIPE_API_BASE?: string;
   OPENROUTER_MGMT_BASE?: string;

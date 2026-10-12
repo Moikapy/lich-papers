@@ -5,7 +5,6 @@ import { Link } from "../components/Link";
 import { Markdown } from "../components/Markdown";
 import { navigate } from "../router";
 
-type ReaderTab = "pdf" | "text";
 
 export function PaperPage({ arxivId, sessionId }: { arxivId: string; sessionId: string | null }) {
   const [paper, setPaper] = useState<PaperMeta | null>(null);
@@ -62,15 +61,25 @@ export function PaperPage({ arxivId, sessionId }: { arxivId: string; sessionId: 
   );
 }
 
-/** Phones and small tablets: mobile browsers can't show a PDF inside a page frame. */
-const isSmallScreen = () => typeof window !== "undefined" && window.matchMedia("(max-width: 860px)").matches;
+interface ReaderText {
+  open: boolean;
+  license: string | null;
+  license_label: string;
+  abs_url: string;
+  html_url: string;
+  pdf_url: string;
+  body?: string;
+  source?: "html" | "pdf" | "abstract";
+}
 
+/**
+ * The reader shows full text only when the paper's license allows it, with attribution.
+ * For every other paper it shows the abstract and links to arXiv, where the PDF and HTML live.
+ */
 function Reader({ paper, onQuote }: { paper: PaperMeta; onQuote: (t: string) => void }) {
-  const [small] = useState(isSmallScreen);
-  const [tab, setTab] = useState<ReaderTab>(small ? "text" : "pdf");
   const textRef = useRef<HTMLDivElement>(null);
-  const [text, setText] = useState<{ body: string; source: string } | null>(null);
-  const [loadingText, setLoadingText] = useState(false);
+  const [text, setText] = useState<ReaderText | null>(null);
+  const [loadingText, setLoadingText] = useState(true);
   const [textError, setTextError] = useState<string | null>(null);
   const [selection, setSelection] = useState("");
   const [attempt, setAttempt] = useState(0);
@@ -85,86 +94,94 @@ function Reader({ paper, onQuote }: { paper: PaperMeta; onQuote: (t: string) => 
     return () => document.removeEventListener("selectionchange", on);
   }, []);
 
-  // Reader is keyed by arxiv id, so text/textError start fresh for each paper. `attempt` drives Retry.
+  // Reader is keyed by arxiv id, so state starts fresh for each paper. `attempt` drives Retry.
   useEffect(() => {
-    if (tab !== "text" || text || textError) return;
     let cancelled = false;
     setLoadingText(true);
     setTextError(null);
-    api<{ body: string; source: string }>(`/papers/${enc(paper.arxiv_id)}/text`)
+    api<ReaderText>(`/papers/${enc(paper.arxiv_id)}/text`)
       .then((t) => !cancelled && setText(t))
       .catch((e) => !cancelled && setTextError((e as Error).message))
       .finally(() => !cancelled && setLoadingText(false));
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, paper.arxiv_id, attempt]);
+  }, [paper.arxiv_id, attempt]);
 
   const captureSelection = () => setSelection(window.getSelection()?.toString().trim() ?? "");
+  const abs = `https://arxiv.org/abs/${paper.arxiv_id}`;
 
   return (
     <section className="reader">
       <div className="toolbar">
-        <div className="tabs">
-          <button className={tab === "pdf" ? "on" : ""} onClick={() => setTab("pdf")}>
-            PDF
-          </button>
-          <button className={tab === "text" ? "on" : ""} onClick={() => setTab("text")}>
-            Text
-          </button>
-        </div>
-        {tab === "text" && selection && (
+        <span className="license-tag" title={text?.license ?? undefined}>
+          {text ? text.license_label : "Paper"}
+        </span>
+        {selection && text?.open && (
           <button className="small" onClick={() => (onQuote(selection), setSelection(""))}>
             Ask about selection
           </button>
         )}
-        {tab === "pdf" && (
-          <a className="small" href={`/api/papers/${enc(paper.arxiv_id)}/pdf`} target="_blank" rel="noreferrer">
-            Open PDF ↗
-          </a>
+        <a className="small" href={text?.pdf_url ?? `https://arxiv.org/pdf/${paper.arxiv_id}`} target="_blank" rel="noreferrer">
+          PDF on arXiv ↗
+        </a>
+      </div>
+      <div className="paper-text" ref={textRef} onMouseUp={captureSelection}>
+        {loadingText && <p className="muted">Loading the paper…</p>}
+        {textError && (
+          <p className="error">
+            {textError}{" "}
+            <button className="small" onClick={() => setAttempt((n) => n + 1)}>
+              Retry
+            </button>
+          </p>
+        )}
+        {text && !loadingText && text.open && text.body && (
+          <>
+            <p className="attribution small">
+              “{paper.title}” by {paper.authors.slice(0, 3).join(", ")}
+              {paper.authors.length > 3 ? " et al." : ""}, from{" "}
+              <a href={text.abs_url} target="_blank" rel="noreferrer">
+                arXiv:{paper.arxiv_id}
+              </a>
+              , licensed under{" "}
+              {text.license ? (
+                <a href={text.license} target="_blank" rel="noreferrer license">
+                  {text.license_label}
+                </a>
+              ) : (
+                text.license_label
+              )}
+              . Text extracted from {text.source === "html" ? "arXiv's HTML version" : "the PDF"} and reformatted for reading. Select text and
+              click “Ask about selection”.
+            </p>
+            {text.source === "html" ? <Markdown text={text.body} /> : <pre className="plain">{text.body}</pre>}
+          </>
+        )}
+        {text && !loadingText && !text.open && (
+          <div className="restricted">
+            <h2>Abstract</h2>
+            <p>{paper.abstract}</p>
+            <div className="row">
+              <a className="button primary" href={text.html_url} target="_blank" rel="noreferrer">
+                Read on arXiv ↗
+              </a>
+              <a className="button" href={text.pdf_url} target="_blank" rel="noreferrer">
+                PDF ↗
+              </a>
+            </div>
+            <p className="muted small">
+              This paper's license ({text.license_label}) doesn't allow us to show its full text here, so read it on arXiv. The tutor can still
+              read it to answer your questions in the chat. To ask about a passage, paste it into the chat.
+            </p>
+          </div>
+        )}
+        {text && !loadingText && text.open && !text.body && (
+          <p className="muted">
+            Couldn't load the full text right now. <a href={abs}>Read it on arXiv ↗</a>
+          </p>
         )}
       </div>
-      {tab === "pdf" ? (
-        small ? (
-          <div className="pdf-mobile">
-            <p>Your browser opens PDFs in its own viewer.</p>
-            <a className="button primary" href={`/api/papers/${enc(paper.arxiv_id)}/pdf`} target="_blank" rel="noreferrer">
-              Open the PDF
-            </a>
-            <p className="muted small">Or use the Text tab to read here and select passages to ask about.</p>
-          </div>
-        ) : (
-          <iframe className="pdf" title={paper.title} src={`/api/papers/${enc(paper.arxiv_id)}/pdf#view=FitH`} />
-        )
-      ) : (
-        <div className="paper-text" ref={textRef} onMouseUp={captureSelection}>
-          {loadingText && <p className="muted">Extracting full text (first time can take a few seconds)…</p>}
-          {textError && (
-            <p className="error">
-              {textError}{" "}
-              <button
-                className="small"
-                onClick={() => {
-                  setTextError(null);
-                  setAttempt((n) => n + 1);
-                }}
-              >
-                Retry
-              </button>
-            </p>
-          )}
-          {text && (
-            <>
-              <p className="muted small">
-                Extracted from {text.source === "html" ? "arXiv's HTML rendering" : text.source === "pdf" ? "the PDF" : "the abstract only"}. Select text
-                and click “Ask about selection”.
-              </p>
-              {text.source === "html" ? <Markdown text={text.body} /> : <pre className="plain">{text.body}</pre>}
-            </>
-          )}
-        </div>
-      )}
     </section>
   );
 }
