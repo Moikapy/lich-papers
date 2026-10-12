@@ -105,6 +105,15 @@ Deploying from your machine instead: `npx wrangler login && npm run deploy`, the
 
 OpenRouter SSO needs no app registration. The callback is `https://<your-domain>/openrouter/callback`, and it works on `*.workers.dev` and on custom domains.
 
+## Legal pages
+
+The Terms, Privacy, Refunds and Copyright policies live at `/terms`, `/privacy`, `/refunds` and `/copyright`. They're written for an individual running the app as a hobby project.
+
+- **Fill them in.** Set the plain vars `OPERATOR_NAME`, `CONTACT_EMAIL` and `GOVERNING_LAW` in the dashboard. Until `CONTACT_EMAIL` is set, the pages show "[contact email not configured]".
+- **Signup records consent.** Signup requires accepting the Terms and Privacy Policy, and the account stores the date and terms version.
+- **Data rights.** In Settings, users can download all their data and delete their account; deletion also cancels Stripe and removes the Pro key.
+- **Get them reviewed.** These are a starting point, not legal advice. Have a lawyer review them before you rely on them.
+
 ## Notes and limits
 
 - **arXiv**: search results are cached for an hour, and extracted paper text is cached in D1 (capped at 500k characters). Please respect arXiv's [API terms](https://info.arxiv.org/help/api/tou.html).

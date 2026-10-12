@@ -8,7 +8,7 @@ import { hashPassword, verifyPassword } from "./crypto";
 import { isPro, PROVIDERS, type AppEnv, type ChatProvider, type Ctx, type Env, type ProviderId, type User } from "./env";
 import { addKnowledge, assertCanAddNote, listKnowledge, NoteLimitError, searchKnowledge } from "./knowledge";
 import { paperTools, runChat, safeProviderMessage, summarize, systemPrompt, type Budget } from "./agent";
-import { applyComp, loadProKey, proAllowance, proCapUsd, stripe, syncSubscription, verifyStripeSignature, type StripeSubscription } from "./billing";
+import { applyComp, loadProKey, proAllowance, revokeProKey, proCapUsd, stripe, syncSubscription, verifyStripeSignature, type StripeSubscription } from "./billing";
 import {
   exchangeOpenRouterCode,
   freeUsageRemaining,
@@ -81,8 +81,25 @@ app.get("/me", async (c) => {
   return c.json({ user });
 });
 
+/** Bump when the Terms or Privacy Policy change materially; recorded per user at signup. */
+const TERMS_VERSION = "2026-10-12";
+
+/** Public site details the legal pages render. */
+app.get("/site", (c) =>
+  c.json({
+    app_name: c.env.APP_NAME,
+    operator: c.env.OPERATOR_NAME || null,
+    contact_email: c.env.CONTACT_EMAIL || null,
+    governing_law: c.env.GOVERNING_LAW || null,
+    terms_version: TERMS_VERSION,
+    price_cents: Number(c.env.PRO_PRICE_CENTS ?? 1000),
+    monthly_cap_usd: proCapUsd(c.env),
+  }),
+);
+
 app.post("/auth/signup", async (c) => {
-  const { email, password } = await json<{ email: string; password: string }>(c);
+  const { email, password, accept_terms } = await json<{ email: string; password: string; accept_terms: boolean }>(c);
+  if (accept_terms !== true) throw new HTTPException(400, { message: "Please accept the Terms of Service and Privacy Policy" });
   const mail = String(email ?? "").trim().toLowerCase();
   if (mail.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail)) throw new HTTPException(400, { message: "Enter a valid email" });
   if (String(password ?? "").length < 8) throw new HTTPException(400, { message: "Password must be at least 8 characters" });
@@ -91,8 +108,9 @@ app.post("/auth/signup", async (c) => {
   if (exists) throw new HTTPException(409, { message: "An account with that email already exists" });
   const id = crypto.randomUUID();
   try {
-    await c.env.DB.prepare("INSERT INTO users (id, email, password_hash, created_at) VALUES (?, ?, ?, ?)")
-      .bind(id, mail, await hashPassword(String(password)), Date.now())
+    const now = Date.now();
+    await c.env.DB.prepare("INSERT INTO users (id, email, password_hash, created_at, terms_accepted_at, terms_version) VALUES (?, ?, ?, ?, ?, ?)")
+      .bind(id, mail, await hashPassword(String(password)), now, now, TERMS_VERSION)
       .run();
   } catch (err) {
     // Lost the SELECT-then-INSERT race against the UNIQUE(email) constraint.
@@ -570,6 +588,75 @@ app.delete("/knowledge/:id", requireUser, async (c) => {
   return c.json({ ok: true });
 });
 
+// ---------------------------------------------------------------- account: export & deletion
+
+/** Everything stored about the user, as JSON (data portability). API keys are listed, never included. */
+app.get("/account/export", requireUser, async (c) => {
+  const user = currentUser(c);
+  const db = c.env.DB;
+  const [account, sessions, messages, knowledge, keys, usage] = await Promise.all([
+    db.prepare("SELECT id, email, plan, plan_status, plan_renews_at, default_provider, default_model, created_at, terms_accepted_at, terms_version FROM users WHERE id = ?").bind(user.id).first(),
+    db.prepare("SELECT id, arxiv_id, title, summary, builds_on, created_at, updated_at FROM chat_sessions WHERE user_id = ? ORDER BY created_at").bind(user.id).all(),
+    db.prepare(
+      "SELECT m.session_id, m.role, m.content, m.meta, m.created_at FROM chat_messages m JOIN chat_sessions s ON s.id = m.session_id WHERE s.user_id = ? ORDER BY m.id",
+    ).bind(user.id).all(),
+    db.prepare("SELECT id, session_id, arxiv_id, kind, content, tags, created_at FROM knowledge WHERE user_id = ? ORDER BY created_at").bind(user.id).all(),
+    db.prepare("SELECT provider, base_url, source, updated_at FROM provider_keys WHERE user_id = ?").bind(user.id).all(),
+    db.prepare("SELECT billed_to, provider, model, prompt_tokens, completion_tokens, created_at FROM usage_events WHERE user_id = ? ORDER BY created_at").bind(user.id).all(),
+  ]);
+  const body = JSON.stringify(
+    {
+      exported_at: new Date().toISOString(),
+      account,
+      chat_sessions: sessions.results,
+      chat_messages: messages.results,
+      knowledge: knowledge.results,
+      connected_providers: keys.results,
+      usage: usage.results,
+    },
+    null,
+    2,
+  );
+  return new Response(body, {
+    headers: { "content-type": "application/json", "content-disposition": `attachment; filename="lich-papers-export.json"` },
+  });
+});
+
+/**
+ * Permanently deletes the account: cancels any Stripe subscription, deletes the Pro key and the
+ * Stripe customer, then the user row (everything else cascades). Requires the password.
+ */
+app.post("/account/delete", requireUser, async (c) => {
+  const user = currentUser(c);
+  const { password } = await json<{ password: string }>(c);
+  await rateLimit(c, `delete:${user.id}`, 5, 15 * 60_000);
+  const row = await c.env.DB.prepare("SELECT password_hash, stripe_customer_id FROM users WHERE id = ?")
+    .bind(user.id)
+    .first<{ password_hash: string; stripe_customer_id: string | null }>();
+  if (!row || !(await verifyPassword(String(password ?? ""), row.password_hash))) {
+    throw new HTTPException(401, { message: "Wrong password" });
+  }
+  // Deleting the Stripe customer also cancels its subscriptions immediately.
+  if (row.stripe_customer_id && c.env.STRIPE_SECRET_KEY) {
+    await stripe(c.env, "DELETE", `customers/${row.stripe_customer_id}`);
+  }
+  await revokeProKey(c.env, user.id);
+  const ownSessions = "SELECT id FROM chat_sessions WHERE user_id = ?";
+  await c.env.DB.batch([
+    c.env.DB.prepare(`DELETE FROM chat_messages WHERE session_id IN (${ownSessions})`).bind(user.id),
+    c.env.DB.prepare("DELETE FROM knowledge WHERE user_id = ?").bind(user.id),
+    c.env.DB.prepare("DELETE FROM chat_sessions WHERE user_id = ?").bind(user.id),
+    c.env.DB.prepare("DELETE FROM provider_keys WHERE user_id = ?").bind(user.id),
+    c.env.DB.prepare("DELETE FROM pro_keys WHERE user_id = ?").bind(user.id),
+    c.env.DB.prepare("DELETE FROM usage_events WHERE user_id = ?").bind(user.id),
+    c.env.DB.prepare("DELETE FROM free_usage WHERE user_id = ?").bind(user.id),
+    c.env.DB.prepare("DELETE FROM auth_sessions WHERE user_id = ?").bind(user.id),
+    c.env.DB.prepare("DELETE FROM users WHERE id = ?").bind(user.id),
+  ]);
+  await endSession(c);
+  return c.json({ ok: true });
+});
+
 // ---------------------------------------------------------------- billing (Stripe)
 
 app.post("/billing/checkout", requireUser, async (c) => {
@@ -601,6 +688,11 @@ app.post("/billing/checkout", requireUser, async (c) => {
     ],
     subscription_data: { metadata: { user_id: user.id } },
     allow_promotion_codes: true,
+    custom_text: {
+      submit: {
+        message: `Renews monthly until you cancel. Cancel anytime from Settings; no refunds for partial months. By subscribing you agree to the Terms at ${origin}/terms.`,
+      },
+    },
     success_url: `${origin}/settings?pro=success`,
     cancel_url: `${origin}/settings?pro=cancelled`,
   });

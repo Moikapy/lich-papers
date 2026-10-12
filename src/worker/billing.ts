@@ -18,7 +18,7 @@ export function stripeForm(params: Record<string, unknown>, prefix = ""): string
   return parts.join("&");
 }
 
-export async function stripe<T = any>(env: Env, method: "GET" | "POST", path: string, params?: Record<string, unknown>): Promise<T> {
+export async function stripe<T = any>(env: Env, method: "GET" | "POST" | "DELETE", path: string, params?: Record<string, unknown>): Promise<T> {
   if (!env.STRIPE_SECRET_KEY) throw new HTTPException(503, { message: "Billing is not configured yet" });
   const base = env.STRIPE_API_BASE ?? "https://api.stripe.com";
   const body = params ? stripeForm(params) : undefined;
@@ -32,6 +32,8 @@ export async function stripe<T = any>(env: Env, method: "GET" | "POST", path: st
     body: method === "POST" ? body : undefined,
   });
   const data = (await res.json().catch(() => ({}))) as any;
+  // Deleting something Stripe has already deleted is a no-op for us.
+  if (method === "DELETE" && res.status === 404) return {} as T;
   if (!res.ok) {
     console.error("stripe error", path, res.status, data?.error?.message);
     throw new HTTPException(502, { message: "The billing provider returned an error. Try again shortly." });

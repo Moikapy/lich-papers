@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { api, chatProviders, PROVIDER_LABELS, type ChatProvider, type ModelInfo, type ProviderId, type User } from "../api";
 import { useAuth } from "../auth";
 import { startOpenRouterConnect } from "../openrouter";
-import { useLocation } from "../router";
+import { navigate, useLocation } from "../router";
+import { Link } from "../components/Link";
 import { RequireAuth } from "./RequireAuth";
 
 interface ProviderStatus {
@@ -131,6 +132,7 @@ export function SettingsPage() {
                 <button onClick={logout}>Sign out</button>
               </div>
             </section>
+            <DataCard />
             <DefaultModelCard
               data={data}
               onSaved={(provider, model) => {
@@ -146,6 +148,77 @@ export function SettingsPage() {
         )}
       </div>
     </RequireAuth>
+  );
+}
+
+function DataCard() {
+  const { setUser } = useAuth();
+  const [confirming, setConfirming] = useState(false);
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const remove = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api("/account/delete", { method: "POST", json: { password } });
+      try {
+        localStorage.removeItem("lp_model");
+      } catch {}
+      setUser(null);
+      navigate("/?deleted=1");
+    } catch (err) {
+      setError((err as Error).message);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="card">
+      <h3>Your data</h3>
+      <p className="muted small">
+        Download everything we store about you (account, conversations, notes, usage), or permanently delete your account. See the{" "}
+        <Link href="/privacy">Privacy Policy</Link>.
+      </p>
+      <div className="row">
+        <a className="button" href="/api/account/export" download>
+          Download my data
+        </a>
+        {!confirming && (
+          <button className="danger" onClick={() => setConfirming(true)}>
+            Delete account…
+          </button>
+        )}
+      </div>
+      {confirming && (
+        <form className="stack" onSubmit={remove}>
+          <p className="small">
+            This permanently deletes your account, conversations, notes, and saved keys, and cancels any Pro subscription immediately with no
+            refund for the current month. It can't be undone.
+          </p>
+          <input
+            type="password"
+            autoComplete="current-password"
+            aria-label="Confirm your password"
+            placeholder="Confirm your password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+          />
+          {error && <p className="error">{error}</p>}
+          <div className="row">
+            <button className="danger" disabled={busy || !password}>
+              {busy ? "Deleting…" : "Permanently delete my account"}
+            </button>
+            <button type="button" onClick={() => (setConfirming(false), setPassword(""), setError(null))} disabled={busy}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+    </section>
   );
 }
 
@@ -227,7 +300,10 @@ function PlanCard({ plan }: { plan: PlanInfo }) {
       ) : (
         <p className="muted small">Pro is coming soon.</p>
       )}
-      <p className="muted small">Cancel anytime. Free stays free: use your own OpenRouter account or API keys.</p>
+      <p className="muted small">
+        Renews monthly; cancel anytime. No refunds for partial months (<Link href="/refunds">details</Link>). Free stays free: use your own
+        OpenRouter account or API keys.
+      </p>
     </section>
   );
 }

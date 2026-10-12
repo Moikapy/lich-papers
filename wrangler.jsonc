@@ -31,5 +31,7 @@
   //   ENCRYPTION_KEY       – required; base64 32-byte key used to encrypt stored API keys
   //   OPENROUTER_API_KEY   – optional; server key for a one-time free trial on the free router
   //   STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, OPENROUTER_PROVISIONING_KEY – required for the Pro plan
+  // Shown in the Terms and Privacy Policy (set as plain vars in the dashboard):
+  //   OPERATOR_NAME        – e.g. "Jane Doe"; CONTACT_EMAIL – privacy/takedown address; GOVERNING_LAW – e.g. "the State of Texas, USA"
   //   COMP_PRO_USER_IDS    – optional; comma-separated account IDs that get Pro for free (needs OPENROUTER_PROVISIONING_KEY)
 }
