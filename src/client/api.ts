@@ -33,6 +33,36 @@ export interface Session {
   message_count?: number;
 }
 
+export interface Collection {
+  id: number;
+  name: string;
+  paper_count: number;
+}
+
+export interface SavedStatus {
+  saved: boolean;
+  collection_ids: number[];
+}
+
+export interface SavedPaper {
+  arxiv_id: string;
+  collection_ids: number[];
+  title: string | null;
+  authors: string[];
+  categories: string[];
+  published: string | null;
+  saved_at: number;
+}
+
+export interface PopularPaper {
+  arxiv_id: string;
+  title: string;
+  authors: string[];
+  categories: string[];
+  published: string | null;
+  readers: number;
+}
+
 export interface ToolUse {
   name: string;
   args: Record<string, unknown>;

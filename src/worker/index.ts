@@ -6,6 +6,7 @@ import { clientIp, endSession, loadUser, currentUser, rateLimit, requireUser, sa
 import { getPaper, getPaperLicense, getPaperWithBody, isOpenLicense, licenseLabel, parseArxivId, purgeExpiredBodies, searchArxiv, type Paper } from "./arxiv";
 import { hashPassword, verifyPassword } from "./crypto";
 import { isPro, PROVIDERS, type AppEnv, type ChatProvider, type Ctx, type Env, type ProviderId, type User } from "./env";
+import { createCollection, deleteCollection, listCollections, listSaved, popularPapers, renameCollection, savedStatus, savePaper, unsavePaper } from "./library";
 import { addKnowledge, assertCanAddNote, listKnowledge, NoteLimitError, searchKnowledge } from "./knowledge";
 import { paperTools, runChat, safeProviderMessage, summarize, systemPrompt, type Budget } from "./agent";
 import { applyComp, loadProKey, proAllowance, revokeProKey, proCapUsd, stripe, syncSubscription, verifyStripeSignature, type StripeSubscription } from "./billing";
@@ -58,6 +59,12 @@ const billingEnabled = (env: Env) => !!(env.STRIPE_SECRET_KEY && env.STRIPE_WEBH
 function arxivIdParam(raw: string): string {
   const id = parseArxivId(raw);
   if (!id) throw new HTTPException(400, { message: "Not a valid arXiv id" });
+  return id;
+}
+
+function collectionIdParam(raw: string): number {
+  const id = Number(raw);
+  if (!Number.isSafeInteger(id) || id <= 0) throw new HTTPException(404, { message: "Collection not found" });
   return id;
 }
 
@@ -584,13 +591,72 @@ app.delete("/knowledge/:id", requireUser, async (c) => {
   return c.json({ ok: true });
 });
 
+// ---------------------------------------------------------------- library (saved papers & collections)
+
+app.get("/library", requireUser, async (c) => {
+  const user = currentUser(c);
+  const [papers, collections] = await Promise.all([listSaved(c.env, user.id), listCollections(c.env, user.id)]);
+  return c.json({ papers, collections });
+});
+
+/** Just the saved ids, so search results can mark saved papers. */
+app.get("/library/ids", requireUser, async (c) => {
+  const { results } = await c.env.DB.prepare("SELECT arxiv_id FROM saved_papers WHERE user_id = ?").bind(currentUser(c).id).all<{ arxiv_id: string }>();
+  return c.json({ ids: results.map((r) => r.arxiv_id) });
+});
+
+app.get("/library/papers/:id", requireUser, async (c) => {
+  const user = currentUser(c);
+  const id = arxivIdParam(c.req.param("id"));
+  const [status, collections] = await Promise.all([savedStatus(c.env, user.id, id), listCollections(c.env, user.id)]);
+  return c.json({ ...status, collections });
+});
+
+/** Saves a paper. With `collection_ids`, sets exactly which collections it's in. */
+app.put("/library/papers/:id", requireUser, async (c) => {
+  const user = currentUser(c);
+  const id = arxivIdParam(c.req.param("id"));
+  const { collection_ids } = await json<{ collection_ids: number[] }>(c);
+  // Caches the paper's metadata so the library can list its title.
+  if (!(await getPaper(c.env, id, c.executionCtx))) throw new HTTPException(404, { message: "Paper not found on arXiv" });
+  await savePaper(c.env, user.id, id, Array.isArray(collection_ids) ? collection_ids : undefined);
+  return c.json(await savedStatus(c.env, user.id, id));
+});
+
+app.delete("/library/papers/:id", requireUser, async (c) => {
+  await unsavePaper(c.env, currentUser(c).id, arxivIdParam(c.req.param("id")));
+  return c.json({ ok: true });
+});
+
+app.post("/library/collections", requireUser, async (c) => {
+  const { name } = await json<{ name: string }>(c);
+  return c.json({ collection: await createCollection(c.env, currentUser(c).id, name) });
+});
+
+app.patch("/library/collections/:id", requireUser, async (c) => {
+  const { name } = await json<{ name: string }>(c);
+  await renameCollection(c.env, currentUser(c).id, collectionIdParam(c.req.param("id")), name);
+  return c.json({ ok: true });
+});
+
+app.delete("/library/collections/:id", requireUser, async (c) => {
+  await deleteCollection(c.env, currentUser(c).id, collectionIdParam(c.req.param("id")));
+  return c.json({ ok: true });
+});
+
+/** Public: papers the most people saved or discussed in the last 30 days (aggregate counts only). */
+app.get("/popular", async (c) => {
+  const papers = await popularPapers(c.env);
+  return c.json({ papers }, 200, { "cache-control": "public, max-age=300" });
+});
+
 // ---------------------------------------------------------------- account: export & deletion
 
 /** Everything stored about the user, as JSON (data portability). API keys are listed, never included. */
 app.get("/account/export", requireUser, async (c) => {
   const user = currentUser(c);
   const db = c.env.DB;
-  const [account, sessions, messages, knowledge, keys, usage] = await Promise.all([
+  const [account, sessions, messages, knowledge, keys, usage, saved, collections, collectionPapers] = await Promise.all([
     db.prepare("SELECT id, email, plan, plan_status, plan_renews_at, default_provider, default_model, created_at, terms_accepted_at, terms_version FROM users WHERE id = ?").bind(user.id).first(),
     db.prepare("SELECT id, arxiv_id, title, summary, builds_on, created_at, updated_at FROM chat_sessions WHERE user_id = ? ORDER BY created_at").bind(user.id).all(),
     db.prepare(
@@ -599,6 +665,9 @@ app.get("/account/export", requireUser, async (c) => {
     db.prepare("SELECT id, session_id, arxiv_id, kind, content, tags, created_at FROM knowledge WHERE user_id = ? ORDER BY created_at").bind(user.id).all(),
     db.prepare("SELECT provider, base_url, source, updated_at FROM provider_keys WHERE user_id = ?").bind(user.id).all(),
     db.prepare("SELECT billed_to, provider, model, prompt_tokens, completion_tokens, created_at FROM usage_events WHERE user_id = ? ORDER BY created_at").bind(user.id).all(),
+    db.prepare("SELECT arxiv_id, created_at FROM saved_papers WHERE user_id = ? ORDER BY created_at").bind(user.id).all(),
+    db.prepare("SELECT id, name, created_at FROM collections WHERE user_id = ? ORDER BY created_at").bind(user.id).all(),
+    db.prepare("SELECT collection_id, arxiv_id FROM collection_papers WHERE user_id = ?").bind(user.id).all(),
   ]);
   const body = JSON.stringify(
     {
@@ -609,6 +678,9 @@ app.get("/account/export", requireUser, async (c) => {
       knowledge: knowledge.results,
       connected_providers: keys.results,
       usage: usage.results,
+      saved_papers: saved.results,
+      collections: collections.results,
+      collection_papers: collectionPapers.results,
     },
     null,
     2,
@@ -641,6 +713,9 @@ app.post("/account/delete", requireUser, async (c) => {
   await c.env.DB.batch([
     c.env.DB.prepare(`DELETE FROM chat_messages WHERE session_id IN (${ownSessions})`).bind(user.id),
     c.env.DB.prepare("DELETE FROM knowledge WHERE user_id = ?").bind(user.id),
+    c.env.DB.prepare("DELETE FROM collection_papers WHERE user_id = ?").bind(user.id),
+    c.env.DB.prepare("DELETE FROM collections WHERE user_id = ?").bind(user.id),
+    c.env.DB.prepare("DELETE FROM saved_papers WHERE user_id = ?").bind(user.id),
     c.env.DB.prepare("DELETE FROM chat_sessions WHERE user_id = ?").bind(user.id),
     c.env.DB.prepare("DELETE FROM provider_keys WHERE user_id = ?").bind(user.id),
     c.env.DB.prepare("DELETE FROM pro_keys WHERE user_id = ?").bind(user.id),

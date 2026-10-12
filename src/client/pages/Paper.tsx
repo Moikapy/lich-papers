@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, chatProviders, enc, postStream, PROVIDER_LABELS, timeAgo, type ChatProvider, type ChatMessage, type ModelInfo, type PaperMeta, type ProviderId, type Session, type ToolUse } from "../api";
+import { api, chatProviders, enc, postStream, PROVIDER_LABELS, timeAgo, type ChatProvider, type ChatMessage, type Collection, type ModelInfo, type PaperMeta, type ProviderId, type SavedStatus, type Session, type ToolUse } from "../api";
 import { useAuth } from "../auth";
 import { Link } from "../components/Link";
 import { Markdown } from "../components/Markdown";
+import { SaveMenu } from "../components/SaveMenu";
 import { navigate } from "../router";
 
 
@@ -30,7 +31,10 @@ export function PaperPage({ arxivId, sessionId }: { arxivId: string; sessionId: 
   return (
     <div className="paper">
       <div className="paper-head">
-        <h1>{paper.title}</h1>
+        <div className="title-row">
+          <h1>{paper.title}</h1>
+          <PaperSave arxivId={paper.arxiv_id} />
+        </div>
         <div className="byline">{paper.authors.join(", ")}</div>
         <div className="meta">
           <span>arXiv:{paper.arxiv_id}</span>
@@ -59,6 +63,33 @@ export function PaperPage({ arxivId, sessionId }: { arxivId: string; sessionId: 
       </div>
     </div>
   );
+}
+
+/** Save button in the paper header; signed-out readers get a sign-in link instead. */
+function PaperSave({ arxivId }: { arxivId: string }) {
+  const { user } = useAuth();
+  const [status, setStatus] = useState<SavedStatus | null>(null);
+  const [collections, setCollections] = useState<Collection[]>([]);
+
+  useEffect(() => {
+    if (!user) return;
+    api<SavedStatus & { collections: Collection[] }>(`/library/papers/${enc(arxivId)}`)
+      .then((r) => {
+        setStatus({ saved: r.saved, collection_ids: r.collection_ids });
+        setCollections(r.collections);
+      })
+      .catch(() => setStatus(null));
+  }, [user, arxivId]);
+
+  if (!user) {
+    return (
+      <Link className="button small" href={`/login?next=${encodeURIComponent(location.pathname + location.search)}`} title="Sign in to save papers">
+        Save
+      </Link>
+    );
+  }
+  if (!status) return null;
+  return <SaveMenu arxivId={arxivId} status={status} collections={collections} onStatus={setStatus} onCollections={setCollections} />;
 }
 
 interface ReaderText {
