@@ -60,6 +60,7 @@ export function SearchPage() {
 
   return (
     <div className="search">
+      {(q || cat) && <h1 className="sr-only">Search results{q ? ` for “${q}”` : ""}</h1>}
       {!q && !cat && (
         <section className="hero">
           <h1>Read any arXiv paper with a tutor at your side.</h1>

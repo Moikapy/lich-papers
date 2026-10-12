@@ -53,6 +53,9 @@ export function App() {
 
   return (
     <AuthContext.Provider value={{ user, loading, setUser }}>
+      <a href="#main" className="skip-link">
+        Skip to main content
+      </a>
       <header className="topbar">
         <Link href="/" className="brand">
           <span className="glyph">⚱</span> Lich Papers
@@ -70,7 +73,7 @@ export function App() {
           )}
         </nav>
       </header>
-      <main className={paperMatch ? "main wide" : "main"}>{page}</main>
+      <main id="main" tabIndex={-1} className={paperMatch ? "main wide" : "main"}>{page}</main>
     </AuthContext.Provider>
   );
 }
