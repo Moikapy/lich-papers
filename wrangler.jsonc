@@ -9,6 +9,8 @@
     "run_worker_first": ["/api/*"]
   },
   "observability": { "enabled": true },
+  // Daily: drop cached paper full text past its 24h lifetime.
+  "triggers": { "crons": ["17 4 * * *"] },
   "d1_databases": [
     {
       "binding": "DB",

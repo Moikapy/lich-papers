@@ -3,7 +3,7 @@ import { HTTPException } from "hono/http-exception";
 import { streamSSE } from "hono/streaming";
 import type { Message, ProviderConfig } from "@moikapy/lich";
 import { clientIp, endSession, loadUser, currentUser, rateLimit, requireUser, sameOrigin, startSession } from "./auth";
-import { getPaper, getPaperWithBody, parseArxivId, searchArxiv, type Paper } from "./arxiv";
+import { getPaper, getPaperLicense, getPaperWithBody, isOpenLicense, licenseLabel, parseArxivId, purgeExpiredBodies, searchArxiv, type Paper } from "./arxiv";
 import { hashPassword, verifyPassword } from "./crypto";
 import { isPro, PROVIDERS, type AppEnv, type ChatProvider, type Ctx, type Env, type ProviderId, type User } from "./env";
 import { addKnowledge, assertCanAddNote, listKnowledge, NoteLimitError, searchKnowledge } from "./knowledge";
@@ -152,6 +152,7 @@ app.get("/search", async (c) => {
   if (!q && !category) return c.json({ total: 0, start: 0, papers: [] });
   const sort = c.req.query("sort");
   const result = await searchArxiv(
+    c.env,
     {
       q,
       category,
@@ -171,30 +172,25 @@ app.get("/papers/:id", async (c) => {
   return c.json({ paper: meta });
 });
 
+/**
+ * Full text for the reader. Shown only when the paper's license allows it (CC BY, CC BY-SA, CC0 /
+ * public domain), with attribution. Every other paper gets its abstract and links to arXiv; the
+ * tutor can still read those papers to answer questions, but the app doesn't republish them.
+ */
 app.get("/papers/:id/text", async (c) => {
-  const paper = await getPaperWithBody(c.env, arxivIdParam(c.req.param("id")), c.executionCtx);
-  if (!paper) throw new HTTPException(404, { message: "Paper not found on arXiv" });
-  return c.json({ body: paper.body, source: paper.body_source });
-});
-
-/** Same-origin PDF proxy so the reader can embed it regardless of arXiv's framing headers. */
-app.get("/papers/:id/pdf", async (c) => {
   const id = arxivIdParam(c.req.param("id"));
-  const res = await fetch(`https://arxiv.org/pdf/${id}`, {
-    headers: { "user-agent": "LichPapers/0.1 (+https://github.com/moikapy/lich-papers)" },
-    cf: { cacheTtlByStatus: { "200-299": 86_400, "400-599": 0 }, cacheEverything: true },
-  } as RequestInit).catch(() => {
-    throw new HTTPException(502, { message: "arXiv is unreachable right now" });
-  });
-  if (res.status === 404) throw new HTTPException(404, { message: "Paper not found on arXiv" });
-  if (!res.ok || !res.body) throw new HTTPException(502, { message: `arXiv returned ${res.status}` });
-  return new Response(res.body, {
-    headers: {
-      "content-type": "application/pdf",
-      "content-disposition": `inline; filename="${id.replace("/", "_")}.pdf"`,
-      "cache-control": "public, max-age=86400",
-    },
-  });
+  const meta = await getPaper(c.env, id, c.executionCtx);
+  if (!meta) throw new HTTPException(404, { message: "Paper not found on arXiv" });
+  const license = await getPaperLicense(c.env, id);
+  const links = {
+    abs_url: `https://arxiv.org/abs/${id}`,
+    html_url: `https://arxiv.org/html/${id}`,
+    pdf_url: `https://arxiv.org/pdf/${id}`,
+  };
+  const licenseInfo = { license, license_label: licenseLabel(license) };
+  if (!isOpenLicense(license)) return c.json({ open: false, ...licenseInfo, ...links });
+  const paper = await getPaperWithBody(c.env, id, c.executionCtx);
+  return c.json({ open: true, body: paper!.body, source: paper!.body_source, ...licenseInfo, ...links });
 });
 
 // ---------------------------------------------------------------- settings / BYOK
@@ -749,4 +745,10 @@ app.post("/billing/webhook", async (c) => {
 
 app.all("*", (c) => c.json({ error: "Not found" }, 404));
 
-export default app;
+export default {
+  fetch: app.fetch,
+  /** Daily cron: drop full text past its short cache lifetime. */
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(purgeExpiredBodies(env).then((n) => console.log(`purged ${n} expired paper bodies`)));
+  },
+} satisfies ExportedHandler<Env>;

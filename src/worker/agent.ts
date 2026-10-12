@@ -130,7 +130,7 @@ export function paperTools({ env, user, paper, sessionId, ctx }: ToolEnv): Tool[
         required: ["query"],
       },
       async execute(args) {
-        const r = await searchArxiv({ q: str(args.query), max: Math.min(10, Math.max(1, num(args.max, 5))) }, ctx);
+        const r = await searchArxiv(env, { q: str(args.query), max: Math.min(10, Math.max(1, num(args.max, 5))) }, ctx);
         if (!r.papers.length) return ok("No results.");
         return ok(
           r.papers

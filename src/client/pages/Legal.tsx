@@ -223,7 +223,7 @@ function Privacy({ app, operator, contact }: Ctx) {
         <li>Cloudflare: hosting, database, and logs.</li>
         <li>Stripe: subscription payments.</li>
         <li>OpenRouter, and the model providers it routes to, or your chosen provider: AI answers.</li>
-        <li>arXiv: we fetch papers and metadata from it; it learns which papers are requested, not who you are.</li>
+        <li>arXiv: we fetch papers, licenses, and metadata from it; it learns which papers are requested, not who requested them.</li>
       </ul>
       <p>We may also disclose data if the law requires it, or to protect the service and its users from harm.</p>
 
@@ -324,8 +324,18 @@ function Copyright({ app, contact }: Ctx) {
       </p>
       <h2>How we use papers</h2>
       <ul>
-        <li>The reader shows the paper fetched from arXiv and links to the original on arXiv.</li>
-        <li>The tutor reads a paper's text to answer your questions about it and quotes only short passages, with pointers to the section.</li>
+        <li>
+          PDFs and arXiv's HTML versions open on arXiv. We don't host or serve copies of papers, and every paper links back to its arXiv page.
+        </li>
+        <li>
+          We show a paper's full text in the app only when its license allows it (CC BY, CC BY-SA, or CC0/public domain), with attribution
+          and a link to the license. For all other papers we show the abstract (which arXiv provides under CC0) and links to arXiv.
+        </li>
+        <li>
+          To answer your questions, the tutor fetches the paper's text from arXiv when needed and keeps it for no more than 24 hours. It
+          quotes only short passages, with pointers to the section.
+        </li>
+        <li>We fetch from arXiv's export service and limit requests to one every few seconds, as arXiv asks.</li>
         <li>We don't sell access to papers. Pro pays for AI models and features, not for content.</li>
       </ul>
       <h2>Takedown requests</h2>
