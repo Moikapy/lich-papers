@@ -186,7 +186,7 @@ function Reader({ paper, onQuote }: { paper: PaperMeta; onQuote: (t: string) => 
               . Text extracted from {text.source === "html" ? "arXiv's HTML version" : "the PDF"} and reformatted for reading. Select text and
               click “Ask about selection”.
             </p>
-            {text.source === "html" ? <Markdown text={text.body} /> : <pre className="plain">{text.body}</pre>}
+            {text.source === "html" ? <Markdown text={text.body} variant="document" /> : <pre className="plain">{text.body}</pre>}
           </>
         )}
         {text && !loadingText && !text.open && (
