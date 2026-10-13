@@ -269,3 +269,19 @@ label.consent input { margin-top: 0.3rem; }
 .attribution { color: var(--muted); border-left: 3px solid var(--border); padding-left: 0.6rem; }
 .restricted { max-width: 70ch; }
 .restricted h2 { font-size: 1.05rem; margin: 0.25rem 0 0.4rem; }
+
+/* notes */
+.msg-footer { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.3rem; }
+.msg-footer .model-tag { margin-top: 0; }
+.save-note { padding: 0; font-size: 0.75rem; color: var(--muted); }
+.save-note:hover:not(:disabled) { color: var(--accent); }
+.save-note.done { color: var(--ok); }
+.note-card { display: flex; flex-direction: column; gap: 0.45rem; }
+.note-title { margin: 0; font-size: 1.02rem; line-height: 1.35; }
+.note-meta { display: flex; flex-wrap: wrap; gap: 0.35rem 0.75rem; align-items: center; }
+.note-body.clamped { max-height: 14rem; overflow: hidden; -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent); mask-image: linear-gradient(to bottom, #000 70%, transparent); }
+.note-tags { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.chip.static { cursor: default; font-size: 0.75rem; padding: 0.1rem 0.6rem; border: 1px solid var(--border); background: var(--panel); }
+.md ul { list-style: disc; }
+.md ul ul { list-style: circle; }
+.md ul ul ul { list-style: square; }

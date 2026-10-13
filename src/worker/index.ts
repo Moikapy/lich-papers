@@ -354,7 +354,8 @@ async function summarizeSession(c: { env: Env; executionCtx: Ctx; req: { url: st
   );
   // Insert the replacement first, then drop older summaries, so a failure never loses the only copy.
   const newId = await addKnowledge(c.env, user.id, {
-    content: `Session "${s.title}" on ${paper?.title ?? s.arxiv_id}:\n${text}`,
+    title: `Session summary: ${s.title}`,
+    content: text,
     kind: "summary",
     session_id: s.id,
     arxiv_id: s.arxiv_id,
@@ -544,9 +545,11 @@ app.get("/knowledge", requireUser, async (c) => {
 });
 
 app.post("/knowledge", requireUser, async (c) => {
-  const { content, tags, arxiv_id } = await json<{ content: string; tags: string; arxiv_id: string }>(c);
+  const { content, title, tags, arxiv_id, session_id } = await json<{ content: string; title: string; tags: string; arxiv_id: string; session_id: string }>(c);
   const text = String(content ?? "").trim();
   if (!text) throw new HTTPException(400, { message: "Note is empty" });
+  // A note saved from a chat answer links back to its conversation (only the user's own).
+  const sessionId = session_id ? (await ownSession(c.env, currentUser(c).id, String(session_id))).id : null;
   try {
     await assertCanAddNote(c.env, currentUser(c));
   } catch (e) {
@@ -554,7 +557,9 @@ app.post("/knowledge", requireUser, async (c) => {
     throw e;
   }
   const id = await addKnowledge(c.env, currentUser(c).id, {
+    title: title ? String(title) : null,
     content: text,
+    session_id: sessionId,
     tags: String(tags ?? ""),
     arxiv_id: arxiv_id ? parseArxivId(String(arxiv_id)) : null,
   });
@@ -566,17 +571,18 @@ app.get("/knowledge/export", requireUser, async (c) => {
   const user = currentUser(c);
   if (!isPro(user)) throw new HTTPException(402, { message: "Exporting your knowledge base is a Pro feature." });
   const { results } = await c.env.DB.prepare(
-    `SELECT k.kind, k.content, k.tags, k.arxiv_id, k.created_at, p.title AS paper_title
+    `SELECT k.kind, k.title, k.content, k.tags, k.arxiv_id, k.created_at, p.title AS paper_title
        FROM knowledge k LEFT JOIN papers p ON p.arxiv_id = k.arxiv_id
       WHERE k.user_id = ? ORDER BY k.created_at`,
   )
     .bind(user.id)
-    .all<{ kind: string; content: string; tags: string; arxiv_id: string | null; created_at: number; paper_title: string | null }>();
+    .all<{ kind: string; title: string | null; content: string; tags: string; arxiv_id: string | null; created_at: number; paper_title: string | null }>();
   const md = [
     "# Lich Papers knowledge base",
     "",
     ...results.map((k) => {
-      const lines = [`## ${k.kind === "summary" ? "Session summary" : "Note"} — ${new Date(k.created_at).toISOString().slice(0, 10)}`];
+      const heading = k.title ?? (k.kind === "summary" ? "Session summary" : "Note");
+      const lines = [`## ${heading} — ${new Date(k.created_at).toISOString().slice(0, 10)}`];
       if (k.arxiv_id) lines.push(`Source: [${k.paper_title ?? `arXiv:${k.arxiv_id}`}](https://arxiv.org/abs/${k.arxiv_id})`);
       if (k.tags) lines.push(`Tags: ${k.tags}`);
       lines.push("", k.content, "");
@@ -667,7 +673,7 @@ app.get("/account/export", requireUser, async (c) => {
     db.prepare(
       "SELECT m.session_id, m.role, m.content, m.meta, m.created_at FROM chat_messages m JOIN chat_sessions s ON s.id = m.session_id WHERE s.user_id = ? ORDER BY m.id",
     ).bind(user.id).all(),
-    db.prepare("SELECT id, session_id, arxiv_id, kind, content, tags, created_at FROM knowledge WHERE user_id = ? ORDER BY created_at").bind(user.id).all(),
+    db.prepare("SELECT id, session_id, arxiv_id, kind, title, content, tags, created_at FROM knowledge WHERE user_id = ? ORDER BY created_at").bind(user.id).all(),
     db.prepare("SELECT provider, base_url, source, updated_at FROM provider_keys WHERE user_id = ?").bind(user.id).all(),
     db.prepare("SELECT billed_to, provider, model, prompt_tokens, completion_tokens, created_at FROM usage_events WHERE user_id = ? ORDER BY created_at").bind(user.id).all(),
     db.prepare("SELECT arxiv_id, created_at FROM saved_papers WHERE user_id = ? ORDER BY created_at").bind(user.id).all(),
