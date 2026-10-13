@@ -294,7 +294,7 @@ function ModelPicker({ choice, onChange, providers }: { choice: ModelChoice; onC
       <input
         list={listId}
         value={choice.model}
-        placeholder={choice.provider === "openrouter" ? "openrouter/free" : choice.provider === "pro" ? "default Pro model" : "model id"}
+        placeholder={choice.provider === "openrouter" ? "openrouter/free" : choice.provider === "pro" ? "default Pro model" : choice.provider === "ollama" ? "e.g. gpt-oss:120b" : "model id"}
         onChange={(e) => onChange({ ...choice, model: e.target.value })}
         aria-label="Model"
       />

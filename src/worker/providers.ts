@@ -10,6 +10,25 @@ const OPENAI_BASE = "https://api.openai.com/v1";
 const ANTHROPIC_BASE = "https://api.anthropic.com";
 export const OLLAMA_CLOUD_BASE = "https://ollama.com";
 
+/** True when a base URL points at Ollama Cloud (ollama.com) rather than a self-hosted server. */
+export function isOllamaCloud(baseUrl: string | null | undefined): boolean {
+  if (!baseUrl) return true; // no base URL means the cloud default
+  try {
+    const host = new URL(baseUrl).hostname;
+    return host === "ollama.com" || host.endsWith(".ollama.com");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Ollama's site lists cloud models as e.g. "gpt-oss:120b-cloud" (the name a local Ollama uses to proxy
+ * to the cloud). The cloud API itself wants the plain name, so drop the suffix when talking to ollama.com.
+ */
+export function ollamaModelName(model: string, baseUrl: string | null | undefined): string {
+  return isOllamaCloud(baseUrl) ? model.trim().replace(/-cloud$/, "") : model.trim();
+}
+
 export interface StoredKey {
   provider: ProviderId;
   api_key: string | null;
@@ -140,11 +159,12 @@ export async function resolveChain(
       }
       break;
     case "ollama":
-      if (k && model && (k.base_url || k.api_key)) {
+      // Ollama Cloud needs the user's key; a self-hosted server may not.
+      if (k && model && (k.api_key || !isOllamaCloud(k.base_url))) {
         chain.push({
           kind: "ollama",
           name: "ollama",
-          model,
+          model: ollamaModelName(model, k.base_url),
           base_url: k.base_url ?? OLLAMA_CLOUD_BASE,
           ...(k.api_key ? { api_key: k.api_key } : {}),
           timeout_ms,
