@@ -82,9 +82,11 @@ export interface KnowledgeEntry {
   session_id: string | null;
   arxiv_id: string | null;
   kind: "note" | "summary";
+  title?: string | null;
   content: string;
   tags: string;
   created_at: number;
+  paper_title?: string | null;
 }
 
 export interface ModelInfo {

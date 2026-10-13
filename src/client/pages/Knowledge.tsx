@@ -10,6 +10,7 @@ export function KnowledgePage() {
   const [entries, setEntries] = useState<KnowledgeEntry[] | null>(null);
   const [q, setQ] = useState("");
   const [note, setNote] = useState("");
+  const [noteTitle, setNoteTitle] = useState("");
   const [tags, setTags] = useState("");
   const [error, setError] = useState<string | null>(null);
 
@@ -27,8 +28,9 @@ export function KnowledgePage() {
     e.preventDefault();
     if (!note.trim()) return;
     try {
-      await api("/knowledge", { method: "POST", json: { content: note, tags } });
+      await api("/knowledge", { method: "POST", json: { title: noteTitle, content: note, tags } });
       setNote("");
+      setNoteTitle("");
       setTags("");
       load();
     } catch (err) {
@@ -77,7 +79,8 @@ export function KnowledgePage() {
         <details className="card">
           <summary>Add a note</summary>
           <form onSubmit={add} className="stack">
-            <textarea rows={3} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Something worth remembering…" />
+            <input value={noteTitle} onChange={(e) => setNoteTitle(e.target.value)} placeholder="Title" aria-label="Note title" />
+            <textarea rows={4} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Something worth remembering… (Markdown works)" aria-label="Note" />
             <input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="tags, comma separated" />
             <button className="primary">Save note</button>
           </form>
@@ -86,27 +89,63 @@ export function KnowledgePage() {
         {entries && entries.length === 0 && <p className="muted">Nothing here yet.</p>}
         <ul className="session-list">
           {entries?.map((k) => (
-            <li key={k.id} className="card">
-              <div className="row spread">
-                <div className="muted small">
-                  <span className={`tag ${k.kind}`}>{k.kind}</span> #{k.id} · {timeAgo(k.created_at)}
-                  {k.arxiv_id && (
-                    <>
-                      {" "}
-                      · <Link href={`/paper/${enc(k.arxiv_id)}${k.session_id ? `?session=${k.session_id}` : ""}`}>arXiv:{k.arxiv_id}</Link>
-                    </>
-                  )}
-                  {k.tags && ` · ${k.tags}`}
-                </div>
-                <button className="small danger" onClick={() => remove(k.id)}>
-                  Delete
-                </button>
-              </div>
-              <Markdown text={k.content} />
-            </li>
+            <NoteCard key={k.id} note={k} onDelete={() => remove(k.id)} />
           ))}
         </ul>
       </div>
     </RequireAuth>
   );
+}
+
+const LONG_NOTE = 700;
+
+function NoteCard({ note: k, onDelete }: { note: KnowledgeEntry; onDelete: () => void }) {
+  const [expanded, setExpanded] = useState(false);
+  const long = k.content.length > LONG_NOTE;
+  const title = k.title || (k.kind === "summary" ? "Session summary" : firstLine(k.content));
+  const tags = k.tags
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+  return (
+    <li className="card note-card">
+      <div className="row spread">
+        <h3 className="note-title">{title}</h3>
+        <button className="small danger" onClick={onDelete} aria-label={`Delete “${title}”`}>
+          Delete
+        </button>
+      </div>
+      <div className="note-meta muted small">
+        <span className={`tag ${k.kind}`}>{k.kind === "summary" ? "Session summary" : "Note"}</span>
+        <span>{timeAgo(k.created_at)}</span>
+        {k.arxiv_id && (
+          <Link href={`/paper/${enc(k.arxiv_id)}${k.session_id ? `?session=${k.session_id}` : ""}`}>{k.paper_title ?? `arXiv:${k.arxiv_id}`}</Link>
+        )}
+      </div>
+      <div className={`note-body${long && !expanded ? " clamped" : ""}`}>
+        <Markdown text={k.content} />
+      </div>
+      {long && (
+        <button className="linklike small" onClick={() => setExpanded((v) => !v)}>
+          {expanded ? "Show less" : "Show more"}
+        </button>
+      )}
+      {tags.length > 0 && (
+        <div className="note-tags">
+          {tags.map((t) => (
+            <span key={t} className="chip static">
+              {t}
+            </span>
+          ))}
+        </div>
+      )}
+    </li>
+  );
+}
+
+/** Title fallback for older untitled notes: the first line, without Markdown markers. */
+function firstLine(text: string): string {
+  const line = text.split("\n").find((l) => l.trim()) ?? "Note";
+  const clean = line.replace(/^[#>*\-\s]+/, "").replace(/[*_`]/g, "").trim();
+  return clean.length > 90 ? `${clean.slice(0, 90)}…` : clean || "Note";
 }

@@ -230,7 +230,7 @@ const TOOL_LABELS: Record<string, (a: Record<string, unknown>) => string> = {
   search_paper: (a) => `Searched the paper for “${a.query}”`,
   read_paper: (a) => (a.section ? `Read section “${a.section}”` : `Read text at ${a.offset ?? 0}`),
   recall_knowledge: (a) => `Recalled notes on “${a.query}”`,
-  save_knowledge: () => "Saved a note to your knowledge",
+  save_knowledge: (a) => (typeof a.title === "string" && a.title ? `Saved “${a.title}” to your notes` : "Saved a note to your notes"),
   search_arxiv: (a) => `Searched arXiv for “${a.query}”`,
   get_arxiv_paper: (a) => `Looked up arXiv:${a.arxiv_id}`,
 };
@@ -535,11 +535,21 @@ function ChatPanel({ paper, sessionId, draft, setDraft }: { paper: PaperMeta; se
             ))}
           </div>
         )}
-        {messages.map((m) => (
+        {messages.map((m, i) => (
           <div key={m.id} className={`msg ${m.role}`}>
             {m.role === "assistant" && m.meta?.tools?.length ? <ToolTrail tools={m.meta.tools} /> : null}
             {m.role === "assistant" ? <Markdown text={m.content} /> : <div className="user-text">{m.content}</div>}
-            {m.role === "assistant" && m.meta?.model && <div className="model-tag">{m.meta.model}</div>}
+            {m.role === "assistant" && (
+              <div className="msg-footer">
+                {m.meta?.model && <span className="model-tag">{m.meta.model}</span>}
+                <SaveNoteButton
+                  content={m.content}
+                  question={messages[i - 1]?.role === "user" ? messages[i - 1]!.content : ""}
+                  arxivId={paper.arxiv_id}
+                  sessionId={session?.id ?? null}
+                />
+              </div>
+            )}
           </div>
         ))}
         {pending && (
@@ -584,6 +594,34 @@ function ChatPanel({ paper, sessionId, draft, setDraft }: { paper: PaperMeta; se
         )}
       </form>
     </section>
+  );
+}
+
+/** Saves an answer to the knowledge base, titled after the question it answered. */
+function SaveNoteButton({ content, question, arxivId, sessionId }: { content: string; question: string; arxivId: string; sessionId: string | null }) {
+  const [state, setState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [message, setMessage] = useState<string | null>(null);
+  const title = question.replace(/\s+/g, " ").trim().slice(0, 100) || "Saved answer";
+  const save = async () => {
+    setState("saving");
+    try {
+      await api("/knowledge", { method: "POST", json: { title, content, arxiv_id: arxivId, session_id: sessionId } });
+      setState("saved");
+    } catch (e) {
+      setMessage((e as Error).message);
+      setState("error");
+    }
+  };
+  if (state === "saved")
+    return (
+      <Link className="small save-note done" href="/knowledge">
+        ✓ Saved to notes
+      </Link>
+    );
+  return (
+    <button className="linklike small save-note" onClick={save} disabled={state === "saving"} title={message ?? "Save this answer to your knowledge base"}>
+      {state === "saving" ? "Saving…" : state === "error" ? "Couldn't save, retry" : "Save to notes"}
+    </button>
   );
 }
 
