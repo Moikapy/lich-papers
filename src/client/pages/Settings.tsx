@@ -38,9 +38,9 @@ const KEY_HELP: Record<ProviderId, { placeholder: string; link: string; note: st
   openai: { placeholder: "sk-…", link: "https://platform.openai.com/api-keys", note: "Used for GPT models." },
   anthropic: { placeholder: "sk-ant-…", link: "https://console.anthropic.com/settings/keys", note: "Used for Claude models." },
   ollama: {
-    placeholder: "API key (Ollama Cloud only)",
+    placeholder: "Ollama API key",
     link: "https://ollama.com/settings/keys",
-    note: "Use Ollama Cloud (https://ollama.com + API key), or your own Ollama server exposed over HTTPS (e.g. a Cloudflare Tunnel). The app runs in the cloud, so it can't reach localhost.",
+    note: "Runs chats on Ollama Cloud with your own key, billed to your Ollama account. Pick a model that supports tool calling (e.g. gpt-oss, qwen3) so the tutor can search the paper.",
   },
 };
 
@@ -418,12 +418,24 @@ function KeyCard({ provider, status, reload }: { provider: ProviderId; status: P
   );
 }
 
+const OLLAMA_CLOUD = "https://ollama.com";
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return "";
+  }
+}
+
 function KeyForm({ provider, initialBase = "", onSaved, onCancel }: { provider: ProviderId; initialBase?: string; onSaved: () => void; onCancel?: () => void }) {
   const [key, setKey] = useState("");
-  const [base, setBase] = useState(initialBase || (provider === "ollama" ? "https://ollama.com" : ""));
+  // Ollama defaults to Ollama Cloud; "self-hosted" reveals a base URL for your own HTTPS server.
+  const [selfHosted, setSelfHosted] = useState(provider === "ollama" && !!initialBase && !/(^|\.)ollama\.com$/.test(hostOf(initialBase)));
+  const [base, setBase] = useState(provider === "ollama" ? (selfHosted ? initialBase : "") : initialBase);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const showBase = provider === "ollama" || provider === "openai";
+  const showBase = provider === "openai" || (provider === "ollama" && selfHosted);
   return (
     <form
       className="stack"
@@ -432,7 +444,8 @@ function KeyForm({ provider, initialBase = "", onSaved, onCancel }: { provider: 
         setBusy(true);
         setError(null);
         try {
-          await api(`/settings/keys/${provider}`, { method: "PUT", json: { api_key: key, base_url: base } });
+          const base_url = provider === "ollama" && !selfHosted ? OLLAMA_CLOUD : base;
+          await api(`/settings/keys/${provider}`, { method: "PUT", json: { api_key: key, base_url } });
           setKey("");
           onSaved();
         } catch (err) {
@@ -442,14 +455,29 @@ function KeyForm({ provider, initialBase = "", onSaved, onCancel }: { provider: 
         }
       }}
     >
-      <input type="password" autoComplete="off" aria-label={`${PROVIDER_LABELS[provider]} API key`} placeholder={KEY_HELP[provider].placeholder} value={key} onChange={(e) => setKey(e.target.value)} />
+      <input
+        type="password"
+        autoComplete="off"
+        aria-label={`${PROVIDER_LABELS[provider]} API key`}
+        placeholder={provider === "ollama" && selfHosted ? "API key (optional for your own server)" : KEY_HELP[provider].placeholder}
+        value={key}
+        onChange={(e) => setKey(e.target.value)}
+        required={provider !== "ollama" || !selfHosted}
+      />
       {showBase && (
         <input
           aria-label="Base URL"
-          placeholder={provider === "openai" ? "Base URL (optional, for OpenAI-compatible APIs)" : "Base URL"}
+          placeholder={provider === "openai" ? "Base URL (optional, for OpenAI-compatible APIs)" : "https://your-ollama-server.example.com"}
           value={base}
           onChange={(e) => setBase(e.target.value)}
+          required={provider === "ollama"}
         />
+      )}
+      {provider === "ollama" && (
+        <label className="inline small">
+          <input type="checkbox" checked={selfHosted} onChange={(e) => setSelfHosted(e.target.checked)} /> Use my own Ollama server instead of
+          Ollama Cloud (must be reachable over HTTPS, e.g. through a Cloudflare Tunnel)
+        </label>
       )}
       {error && <p className="error">{error}</p>}
       <div className="row">

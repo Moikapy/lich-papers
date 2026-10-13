@@ -186,7 +186,7 @@ function Reader({ paper, onQuote }: { paper: PaperMeta; onQuote: (t: string) => 
               . Text extracted from {text.source === "html" ? "arXiv's HTML version" : "the PDF"} and reformatted for reading. Select text and
               click “Ask about selection”.
             </p>
-            {text.source === "html" ? <Markdown text={text.body} /> : <pre className="plain">{text.body}</pre>}
+            {text.source === "html" ? <Markdown text={text.body} variant="document" /> : <pre className="plain">{text.body}</pre>}
           </>
         )}
         {text && !loadingText && !text.open && (
@@ -294,7 +294,7 @@ function ModelPicker({ choice, onChange, providers }: { choice: ModelChoice; onC
       <input
         list={listId}
         value={choice.model}
-        placeholder={choice.provider === "openrouter" ? "openrouter/free" : choice.provider === "pro" ? "default Pro model" : "model id"}
+        placeholder={choice.provider === "openrouter" ? "openrouter/free" : choice.provider === "pro" ? "default Pro model" : choice.provider === "ollama" ? "e.g. gpt-oss:120b" : "model id"}
         onChange={(e) => onChange({ ...choice, model: e.target.value })}
         aria-label="Model"
       />

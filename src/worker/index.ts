@@ -24,6 +24,7 @@ import {
   SHARED_PROVIDER,
   trialLimit,
   saveKey,
+  isOllamaCloud,
   validateBaseUrl,
 } from "./providers";
 
@@ -248,7 +249,11 @@ app.put("/settings/keys/:provider", requireUser, async (c) => {
   const { api_key, base_url } = await json<{ api_key: string; base_url: string }>(c);
   const key = String(api_key ?? "").trim() || null;
   const base = validateBaseUrl(c.env, String(base_url ?? "").trim() || null);
-  if (!key && !(provider === "ollama" && base)) throw new HTTPException(400, { message: "Enter an API key" });
+  if (provider === "ollama") {
+    if (isOllamaCloud(base) && !key) throw new HTTPException(400, { message: "Ollama Cloud needs an API key (ollama.com → Settings → Keys)" });
+  } else if (!key) {
+    throw new HTTPException(400, { message: "Enter an API key" });
+  }
   await saveKey(c.env, currentUser(c).id, provider, key, base);
   return c.json({ ok: true });
 });
