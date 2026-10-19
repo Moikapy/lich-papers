@@ -29,7 +29,10 @@
     "PRO_MONTHLY_CAP_USD": "4",
     "PRO_DEFAULT_MODEL": "google/gemini-2.5-flash",
     // One-time trial on the shared OPENROUTER_API_KEY, in messages.
-    "FREE_TRIAL_MESSAGES": "10"
+    "FREE_TRIAL_MESSAGES": "10",
+    // Shared decision model for every signed-in user: Clef (27B) on Workers AI, billed to this account.
+    "DECISION_BACKEND": "workers-ai",
+    "DECISION_MODEL": "clef"
   }
   // Secrets (set with `wrangler secret put`):
   //   ENCRYPTION_KEY       – required; base64 32-byte key used to encrypt stored API keys
