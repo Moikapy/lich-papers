@@ -69,11 +69,18 @@ export interface ToolUse {
   ok: boolean;
 }
 
+/** Decision-model check of an answer against the passages the tutor read. */
+export interface Grounding {
+  p: number;
+  verdict: "grounded" | "partly" | "unsupported";
+  evidence: "passages" | "excerpt";
+}
+
 export interface ChatMessage {
   id: number | string;
   role: "user" | "assistant";
   content: string;
-  meta: { provider: string | null; model: string | null; tools: ToolUse[] } | null;
+  meta: { provider: string | null; model: string | null; tools: ToolUse[]; routing?: string; grounding?: Grounding } | null;
   created_at: number;
 }
 

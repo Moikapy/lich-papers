@@ -36,6 +36,19 @@ export interface Env {
   /** Dev/testing only: override the Stripe and OpenRouter management API base URLs. */
   STRIPE_API_BASE?: string;
   OPENROUTER_MGMT_BASE?: string;
+  /**
+   * Optional server-funded decision model (Ollama /v1/systemone, e.g. Clef Flash) for users who
+   * haven't picked their own: search re-ranking, question routing, note tags, grounding checks.
+   */
+  DECISION_OLLAMA_KEY?: string;
+  /** "workers-ai" runs the shared decision model on Workers AI through the AI binding. */
+  DECISION_BACKEND?: string;
+  /** Workers AI binding (for DECISION_BACKEND = "workers-ai"). */
+  AI?: Ai;
+  /** Ollama server for the decision model (default Ollama Cloud). */
+  DECISION_OLLAMA_BASE?: string;
+  /** Decision model name (default "clef-flash"; "clef" or "clef-flash" on Workers AI). */
+  DECISION_MODEL?: string;
   /** "1" lets provider base URLs use http:// (local development only). */
   ALLOW_INSECURE_PROVIDER_URLS?: string;
 }

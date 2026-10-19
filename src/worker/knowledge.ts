@@ -1,3 +1,4 @@
+import { mergeTags, tagNote, type DecisionConfig } from "./decide";
 import type { Env } from "./env";
 import { tokenize } from "./paper-text";
 
@@ -92,4 +93,15 @@ export function formatKnowledge(rows: KnowledgeRow[]): string {
       return `- #${r.id} ${r.kind}${src}${tags}: ${origin}${title}${flattenNote(r.content)}`;
     })
     .join("\n");
+}
+
+/** Adds note-type tags from the decision model. Never throws: tags are a nicety. */
+export async function autoTagNote(env: Env, cfg: DecisionConfig, id: number, title: string, content: string, tags: string): Promise<void> {
+  try {
+    const auto = await tagNote(cfg, title, content);
+    if (!auto?.length) return;
+    await env.DB.prepare("UPDATE knowledge SET tags = ? WHERE id = ?").bind(mergeTags(tags, auto).slice(0, 300), id).run();
+  } catch (err) {
+    console.warn("auto-tag failed", err);
+  }
 }

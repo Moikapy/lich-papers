@@ -14,6 +14,14 @@ full text and for remembering what you've learned across sessions.
   - **Paid OpenRouter models**: users who have credits on OpenRouter can pick any of its models.
   - **BYOK**: users can add keys for **OpenAI**, **Anthropic**, and **Ollama** (Ollama Cloud, or their own server over HTTPS).
   - **Fallback**: if the chosen model fails, lich fails over to the free router automatically.
+- **Decision model (optional)**: Cloudflare's [Clef / Clef Flash](https://ollama.com/library/clef) on Ollama, a small judge model that answers typed questions (yes/no, choice, score) through `/v1/systemone`. It runs on the user's own Ollama key (Settings → Decision model), or on the app's shared one: Workers AI through the `AI` binding (`DECISION_BACKEND=workers-ai`; Clef Flash is $0.09 per million input tokens, no output charge) or `DECISION_OLLAMA_KEY`. When it's on:
+  - **Smart ranking**: re-ranks a page of search results, scoring each paper's relevance on its own.
+  - **Question routing**: points the tutor at the right tools (paper text, related work, your notes, or none) when the judge is confident.
+  - **Note tags**: tags saved notes by type (definition, method, result, math, …).
+  - **Figures**: `inspect_figure` lets the tutor look at a figure's image and ask it yes/no questions.
+  - **Grounding badge**: after each answer, checks its claims against the passages the tutor read and shows whether they're supported.
+
+  Everything fails open: without a decision model, or when it errors, the app works as before.
 
 ## Architecture
 
@@ -34,6 +42,12 @@ One Worker serves the static SPA and the API (`src/worker`). Each chat message b
 | `recall_knowledge` | Full-text search over the user's notes and session summaries |
 | `save_knowledge` | Saves a self-contained note for future sessions |
 | `search_arxiv` / `get_arxiv_paper` | Looks up related work |
+| `paper_figures` | Lists figures and captions (arXiv HTML papers) |
+| `inspect_figure` | Asks the decision model about a figure's image (decision-model plugin) |
+
+The decision-model features inside the agent ship as a lich plugin (`src/worker/decision-plugin.ts`): it adds
+`inspect_figure` and tags notes from an `after_tool_call` hook on `save_knowledge`. Routing runs before the agent
+(it changes the system prompt) and the grounding check after it (it needs the final answer), both in `src/worker/decide.ts`.
 
 The provider chain is the user's chosen provider and model first, then `openrouter/free`. The free router uses the
 user's OpenRouter key, the Pro key, or the optional shared server key, which is a one-time trial of `FREE_TRIAL_MESSAGES`
@@ -86,7 +100,13 @@ setup, every push to `main` deploys.
    - Build command: `npm run build`
    - Deploy command: `npx wrangler deploy && npx wrangler d1 migrations apply lich-papers --remote`
    - (Optional) Non-production branch deploy command: `npx wrangler versions upload`. This gives PRs preview URLs. Preview builds share the production D1 database.
-3. **Add secrets.** Go to **Worker → Settings → Variables and Secrets**:
+3. **Add variables and secrets.** Go to **Worker → Settings → Variables and Secrets**. Plain variables live here, not in
+   `wrangler.jsonc` (`keep_vars` stops deploys from deleting them):
+   - Variables: `APP_NAME` (`Lich Papers`), `DEFAULT_MODEL` (`openrouter/free`), `PRO_PRICE_CENTS` (`1000`),
+     `PRO_MONTHLY_CAP_USD` (`4`), `PRO_DEFAULT_MODEL` (e.g. `google/gemini-2.5-flash`), `FREE_TRIAL_MESSAGES` (`10`), and
+     optionally `DECISION_BACKEND` (`workers-ai`) and `DECISION_MODEL` (`clef-flash` or `clef`) for the shared decision model.
+
+   Secrets:
    - `ENCRYPTION_KEY` (**required**). Generate it with `openssl rand -base64 32`. Don't change it later: keys already stored become unreadable.
    - `OPENROUTER_API_KEY` (optional). A server key for the one-time trial (`FREE_TRIAL_MESSAGES`, default 10).
    - Pro (all three are needed, or the upgrade button shows "coming soon"):
@@ -97,7 +117,7 @@ setup, every push to `main` deploys.
 5. **Set up Stripe (for Pro).**
    - **Webhook.** In Stripe → Developers → Webhooks, add the endpoint `https://<your-domain>/api/billing/webhook` with these events: `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`. Copy its signing secret into `STRIPE_WEBHOOK_SECRET`.
    - **Customer portal.** In Stripe → Settings → Billing → Customer portal, save the settings once (allow cancellation and payment-method updates). "Manage billing" won't work until you do.
-   - **No product setup needed.** Checkout creates the $10/month price inline. The price, cap and default model are the `PRO_*` vars in `wrangler.jsonc`.
+   - **No product setup needed.** Checkout creates the $10/month price inline. The price, cap and default model are the `PRO_*` variables from step 3.
    - **Free Pro for yourself or staff.** Sign up, copy your Account ID from Settings, and add it to the `COMP_PRO_USER_IDS` secret (comma-separated). On your next visit the account switches to Pro, with no Stripe involved and the same monthly cap. Remove the ID to undo. This uses IDs rather than emails because emails aren't verified, so anyone could register your address first.
    - **Check the default model.** Before launch, confirm that `PRO_DEFAULT_MODEL` is a current OpenRouter model ID with the price you expect.
 

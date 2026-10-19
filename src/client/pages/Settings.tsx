@@ -24,9 +24,17 @@ interface PlanInfo {
   billing_enabled: boolean;
 }
 
+interface DecisionSettings {
+  model: string | null;
+  server_available: boolean;
+  active: boolean;
+  models: { id: string; name: string }[];
+}
+
 interface SettingsData {
   default_provider: ChatProvider;
   default_model: string | null;
+  decision: DecisionSettings;
   providers: Record<ProviderId, ProviderStatus>;
   openrouter_credits: { total: number; used: number } | null;
   trial: { remaining: number; limit: number } | null;
@@ -120,6 +128,7 @@ export function SettingsPage() {
             {(["openai", "anthropic", "ollama"] as ProviderId[]).map((p) => (
               <KeyCard key={p} provider={p} status={data.providers[p]} reload={load} />
             ))}
+            <DecisionCard decision={data.decision} ollamaConnected={data.providers.ollama.connected} reload={load} />
             <section className="card">
               <h3>Account</h3>
               <p className="small">
@@ -567,6 +576,64 @@ function DefaultModelCard({ data, onSaved }: { data: SettingsData; onSaved: (p: 
           Save default
         </button>
       </div>
+    </section>
+  );
+}
+
+/** Picks the decision model (Clef on Ollama) used for smart ranking, routing, note tags and answer checks. */
+function DecisionCard({ decision, ollamaConnected, reload }: { decision: DecisionSettings; ollamaConnected: boolean; reload: () => void }) {
+  const known = decision.models.some((m) => m.id === decision.model);
+  const initial = decision.model === null ? "" : decision.model === "off" ? "off" : known ? decision.model : "custom";
+  const [pick, setPick] = useState(initial);
+  const [custom, setCustom] = useState(known || !decision.model || decision.model === "off" ? "" : decision.model);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const model = pick === "" ? null : pick === "custom" ? custom.trim() : pick;
+      await api("/settings/decision", { method: "PUT", json: { model } });
+      reload();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const needsKey = pick !== "" && pick !== "off" && !ollamaConnected;
+  return (
+    <section className="card">
+      <h3>Decision model</h3>
+      <p className="small">
+        A small judge model (Cloudflare's Clef on Ollama) that re-ranks search results, steers the tutor to the right tools, tags your notes,
+        looks at figures, and checks answers against the paper. Pick Clef here to run it on your own Ollama key, or keep the default to use
+        the app's shared one when it's available.
+      </p>
+      <p className="small">
+        Status: <strong>{decision.active ? "on" : "off"}</strong>
+        {decision.model === null && decision.server_available && " (using the app's shared decision model)"}
+      </p>
+      <div className="row">
+        <select value={pick} onChange={(e) => setPick(e.target.value)} aria-label="Decision model">
+          <option value="">{decision.server_available ? "Default (app's shared model)" : "Default (off)"}</option>
+          {decision.models.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.name}
+            </option>
+          ))}
+          <option value="custom">Other Ollama decision model…</option>
+          <option value="off">Off</option>
+        </select>
+        {pick === "custom" && <input value={custom} onChange={(e) => setCustom(e.target.value)} placeholder="e.g. clef:27b" />}
+        <button onClick={save} disabled={busy || (pick === "custom" && !custom.trim())}>
+          {busy ? "Saving…" : "Save"}
+        </button>
+      </div>
+      {needsKey && <p className="small muted">Add your Ollama key above to use your own decision model.</p>}
+      {error && <p className="error">{error}</p>}
     </section>
   );
 }

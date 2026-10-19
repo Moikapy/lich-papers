@@ -428,3 +428,114 @@ async function htmlToText(res: Response): Promise<string> {
     .replaceAll(INDENT, "   ")
     .trim();
 }
+
+// ---------------------------------------------------------------- figures
+
+export interface Figure {
+  /** 1-based, in document order. */
+  n: number;
+  /** The paper's own label, e.g. "Figure 3". */
+  label: string;
+  caption: string;
+  /** Absolute image URL on arXiv's HTML rendering. */
+  src: string;
+}
+
+const MAX_FIGURES = 40;
+
+/** Parses figures (image + caption) out of arXiv's LaTeXML HTML. `base` resolves relative image paths. */
+export async function parseFigures(res: Response, base: string): Promise<Figure[]> {
+  const figs: { src: string | null; caption: string; label: string }[] = [];
+  let cur: { src: string | null; caption: string; label: string } | null = null;
+  let depth = 0;
+  let inCaption = 0;
+  let inTag = 0;
+  await new HTMLRewriter()
+    .on("figure", {
+      element(el) {
+        // Sub-figures (panels) belong to their outer figure.
+        if (depth++ === 0) cur = { src: null, caption: "", label: "" };
+        el.onEndTag(() => {
+          if (--depth === 0 && cur) {
+            if (cur.src && figs.length < MAX_FIGURES) figs.push(cur);
+            cur = null;
+          }
+        });
+      },
+    })
+    .on("figure img", {
+      element(el) {
+        const src = el.getAttribute("src");
+        if (cur && !cur.src && src && !src.startsWith("data:")) cur.src = src;
+      },
+    })
+    .on("figure figcaption", {
+      element(el) {
+        inCaption++;
+        el.onEndTag(() => void inCaption--);
+      },
+    })
+    .on("figure figcaption .ltx_tag", {
+      element(el) {
+        inTag++;
+        el.onEndTag(() => void inTag--);
+      },
+    })
+    .on("figure figcaption math", {
+      element(el) {
+        const alt = el.getAttribute("alttext");
+        if (cur && alt) cur.caption += ` $${alt}$ `;
+      },
+    })
+    .onDocument({
+      text(t) {
+        if (!cur || !inCaption) return;
+        if (inTag) cur.label += t.text;
+        else cur.caption += t.text;
+      },
+    })
+    .transform(res)
+    .arrayBuffer();
+  return figs.map((f, i) => ({
+    n: i + 1,
+    label: decodeEntities(f.label).replace(/\s+/g, " ").replace(/:\s*$/, "").trim() || `Figure ${i + 1}`,
+    caption: decodeEntities(f.caption).replace(/\$[^$]*\$/g, (m) => (m.length > 200 ? "$…$" : m)).replace(/\s+/g, " ").trim().slice(0, 1200),
+    src: new URL(f.src!, base).toString(),
+  }));
+}
+
+/** Figures of a paper's HTML rendering (empty when arXiv has no HTML for it). Cached for a day. */
+export async function getFigures(env: Env, id: string, ctx?: Ctx): Promise<Figure[]> {
+  const cache = (caches as unknown as { default: Cache }).default;
+  const key = new Request(`https://lich-papers.internal/figures/${encodeURIComponent(id)}`);
+  const hit = await cache.match(key);
+  if (hit) return (await hit.json()) as Figure[];
+  const res = await arxivFetch(env, `${EXPORT}/html/${id}`);
+  if (!res.ok || !(res.headers.get("content-type") ?? "").includes("html")) return [];
+  // Relative image paths are relative to the final (versioned) URL, e.g. /html/2401.00001v2/.
+  const base = (res.url || `${EXPORT}/html/${id}`).replace(/\/?$/, "/");
+  const figs = await parseFigures(res, base);
+  const put = cache.put(key, Response.json(figs, { headers: { "cache-control": "public, max-age=86400" } }));
+  ctx ? ctx.waitUntil(put) : await put;
+  return figs;
+}
+
+const MAX_FIGURE_BYTES = 4 * 1024 * 1024;
+
+/** Raster formats the Clef models accept. */
+const FIGURE_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+
+/** Downloads one figure image as base64, or null if it isn't a reasonably sized PNG/JPEG/WebP on arXiv. */
+export async function fetchFigureImage(env: Env, fig: Figure): Promise<{ base64: string; type: string } | null> {
+  const host = new URL(fig.src).hostname;
+  if (host !== "arxiv.org" && !host.endsWith(".arxiv.org")) return null;
+  const res = await arxivFetch(env, fig.src);
+  const type = (res.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
+  // SVG, GIF and other formats aren't something the decision model can read.
+  if (!res.ok || !FIGURE_TYPES.has(type)) return null;
+  const buf = new Uint8Array(await res.arrayBuffer());
+  if (buf.length > MAX_FIGURE_BYTES) return null;
+  let bin = "";
+  for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+  return { base64: btoa(bin), type };
+}
