@@ -7,8 +7,11 @@ import { getPaper, getPaperLicense, getPaperWithBody, isOpenLicense, licenseLabe
 import { hashPassword, verifyPassword } from "./crypto";
 import { isPro, PROVIDERS, type AppEnv, type ChatProvider, type Ctx, type Env, type ProviderId, type User } from "./env";
 import { createCollection, deleteCollection, listCollections, listSaved, popularPapers, renameCollection, savedStatus, savePaper, unsavePaper } from "./library";
-import { addKnowledge, assertCanAddNote, listKnowledge, NoteLimitError, searchKnowledge } from "./knowledge";
-import { paperTools, runChat, safeProviderMessage, summarize, systemPrompt, type Budget } from "./agent";
+import { addKnowledge, assertCanAddNote, autoTagNote, listKnowledge, NoteLimitError, searchKnowledge } from "./knowledge";
+import { checkGrounding, decisionConfig, DECISION_MODELS, DECISIONS_OFF, rerank, routeQuestion, routingHint, userDecisionModel } from "./decide";
+import { outline } from "./paper-text";
+import { decisionPlugin } from "./decision-plugin";
+import { figureLoader, paperTools, runChat, safeProviderMessage, summarize, systemPrompt, type Budget } from "./agent";
 import { applyComp, loadProKey, proAllowance, revokeProKey, proCapUsd, stripe, syncSubscription, verifyStripeSignature, type StripeSubscription } from "./billing";
 import {
   exchangeOpenRouterCode,
@@ -170,6 +173,13 @@ app.get("/search", async (c) => {
     },
     c.executionCtx,
   );
+  // Optional: re-rank a relevance-sorted free-text search with the decision model.
+  const user = c.get("user");
+  if (c.req.query("rerank") === "1" && user && q && !parseArxivId(q) && sort !== "submittedDate" && sort !== "lastUpdatedDate") {
+    const cfg = await decisionConfig(c.env, user);
+    const ranked = cfg ? await rerank(cfg, q, result.papers) : null;
+    if (ranked) return c.json({ ...result, papers: ranked, reranked: true });
+  }
   return c.json(result);
 });
 
@@ -222,9 +232,17 @@ app.get("/settings", requireUser, async (c) => {
     .bind(user.id)
     .first<{ plan: string; plan_status: string | null; plan_renews_at: number | null; stripe_customer_id: string | null }>();
   const proKey = isPro(user) ? await loadProKey(c.env, user.id) : null;
+  const decisionModel = await userDecisionModel(c.env, user.id);
+  const serverDecisions = !!(c.env.DECISION_OLLAMA_KEY || (c.env.DECISION_OLLAMA_BASE && !isOllamaCloud(c.env.DECISION_OLLAMA_BASE)));
   return c.json({
     default_provider: user.default_provider,
     default_model: user.default_model,
+    decision: {
+      model: decisionModel,
+      server_available: serverDecisions,
+      active: !!(await decisionConfig(c.env, user)),
+      models: DECISION_MODELS,
+    },
     providers,
     openrouter_credits: orKey ? await openRouterCredits(orKey) : null,
     trial: c.env.OPENROUTER_API_KEY && !orKey && !isPro(user)
@@ -279,6 +297,16 @@ app.put("/settings/default", requireUser, async (c) => {
     .bind(provider, String(model ?? "").trim() || null, currentUser(c).id)
     .run();
   return c.json({ ok: true });
+});
+
+app.get("/settings/decision", requireUser, async (c) => c.json({ active: !!(await decisionConfig(c.env, currentUser(c))) }));
+
+app.put("/settings/decision", requireUser, async (c) => {
+  const { model } = await json<{ model: string | null }>(c);
+  const value = model === null || model === undefined || String(model).trim() === "" ? null : String(model).trim().slice(0, 100);
+  if (value && value !== DECISIONS_OFF && !/^[\w.:/-]+$/.test(value)) throw new HTTPException(400, { message: "Not a valid model name" });
+  await c.env.DB.prepare("UPDATE users SET decision_model = ? WHERE id = ?").bind(value, currentUser(c).id).run();
+  return c.json({ ok: true, active: !!(await decisionConfig(c.env, currentUser(c))) });
 });
 
 app.get("/models/:provider", requireUser, async (c) => {
@@ -495,12 +523,19 @@ app.post("/sessions/:id/messages", requireUser, async (c) => {
         if (p?.summary) buildsOn.push({ title: p.title, summary: p.summary });
       }
 
+      const decision = await decisionConfig(c.env, user);
+      const routing = decision ? await routeQuestion(decision, paper.title, outline(paper.body), input) : null;
+      const hint = routing ? routingHint(routing) : null;
+      const figures = figureLoader(c.env, paper, c.executionCtx);
+      const plugin = decision ? decisionPlugin({ env: c.env, paper, decision, figures, ctx: c.executionCtx }) : null;
+
       const result = await metered(c.env, user.id, chain.providers, (providers, counter) => runChat({
         providers,
         counter,
         budget,
-        system: systemPrompt(paper, related.filter((r) => r.session_id !== s.id), buildsOn, budget),
-        tools: paperTools({ env: c.env, user, paper, sessionId: s.id, ctx: c.executionCtx }),
+        system: systemPrompt(paper, related.filter((r) => r.session_id !== s.id), buildsOn, budget, hint),
+        tools: paperTools({ env: c.env, user, paper, sessionId: s.id, ctx: c.executionCtx, figures, onNoteSaved: plugin?.onNoteSaved }),
+        plugins: plugin ? [plugin] : [],
         history,
         input,
         signal: c.req.raw.signal,
@@ -509,7 +544,13 @@ app.post("/sessions/:id/messages", requireUser, async (c) => {
       if (result.stopped === "aborted") return;
 
       const now = Date.now();
-      const meta = { provider: result.provider, model: result.model, tools: result.tools, usage: result.usage };
+      const meta: Record<string, unknown> = {
+        provider: result.provider,
+        model: result.model,
+        tools: result.tools,
+        usage: result.usage,
+        ...(routing ? { routing: routing.route } : {}),
+      };
       const stmts = [
         c.env.DB.prepare("INSERT INTO chat_messages (session_id, role, content, created_at) VALUES (?, 'user', ?, ?)").bind(s.id, input, now),
         c.env.DB.prepare("INSERT INTO chat_messages (session_id, role, content, meta, created_at) VALUES (?, 'assistant', ?, ?, ?)").bind(
@@ -526,8 +567,27 @@ app.post("/sessions/:id/messages", requireUser, async (c) => {
       if (past.length === 0) {
         stmts.push(c.env.DB.prepare("UPDATE chat_sessions SET title = ? WHERE id = ?").bind(input.replace(/\s+/g, " ").slice(0, 80), s.id));
       }
-      await c.env.DB.batch(stmts);
+      const saved = await c.env.DB.batch(stmts);
       await send("done", { content: result.content, meta });
+
+      // After the answer is shown: check it against the passages the tutor read.
+      // The answer is already saved and shown, so a failure here must not surface as an error.
+      if (decision && result.stopped === "final" && paper.body_source !== "abstract") {
+        try {
+          await send("status", { text: "Checking the answer against the paper…" });
+          const excerpt = paper.body.slice(0, 8000);
+          const grounding = await checkGrounding(decision, input, result.content, result.passages, excerpt);
+          if (grounding) {
+            const messageId = saved[1]?.meta?.last_row_id;
+            if (messageId) {
+              await c.env.DB.prepare("UPDATE chat_messages SET meta = ? WHERE id = ?").bind(JSON.stringify({ ...meta, grounding }), messageId).run();
+            }
+            await send("grounding", grounding);
+          }
+        } catch (err) {
+          console.warn("grounding check failed", err);
+        }
+      }
     } catch (err) {
       console.error("chat failed", err);
       const message = err instanceof HTTPException ? err.message : safeProviderMessage(err);
@@ -563,6 +623,8 @@ app.post("/knowledge", requireUser, async (c) => {
     tags: String(tags ?? ""),
     arxiv_id: arxiv_id ? parseArxivId(String(arxiv_id)) : null,
   });
+  const decision = await decisionConfig(c.env, currentUser(c));
+  if (decision) c.executionCtx.waitUntil(autoTagNote(c.env, decision, id, title ? String(title) : "", text, String(tags ?? "")));
   return c.json({ id });
 });
 

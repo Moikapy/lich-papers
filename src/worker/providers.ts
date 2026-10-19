@@ -22,11 +22,12 @@ export function isOllamaCloud(baseUrl: string | null | undefined): boolean {
 }
 
 /**
- * Ollama's site lists cloud models as e.g. "gpt-oss:120b-cloud" (the name a local Ollama uses to proxy
- * to the cloud). The cloud API itself wants the plain name, so drop the suffix when talking to ollama.com.
+ * Ollama's site lists cloud models as e.g. "gpt-oss:120b-cloud" or "clef:cloud" (the names a local
+ * Ollama uses to proxy to the cloud). The cloud API itself wants the plain name, so drop the suffix
+ * when talking to ollama.com.
  */
 export function ollamaModelName(model: string, baseUrl: string | null | undefined): string {
-  return isOllamaCloud(baseUrl) ? model.trim().replace(/-cloud$/, "") : model.trim();
+  return isOllamaCloud(baseUrl) ? model.trim().replace(/[-:]cloud$/, "") : model.trim();
 }
 
 export interface StoredKey {

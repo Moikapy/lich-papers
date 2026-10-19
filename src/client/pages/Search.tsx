@@ -26,8 +26,11 @@ export function SearchPage() {
   const cat = url.searchParams.get("cat") ?? "";
   const sort = url.searchParams.get("sort") ?? "relevance";
   const start = Number(url.searchParams.get("start") ?? 0);
+  const smart = url.searchParams.get("rerank") === "1";
   const [draft, setDraft] = useState(q);
-  const [data, setData] = useState<{ total: number; papers: PaperMeta[] } | null>(null);
+  const [data, setData] = useState<{ total: number; papers: PaperMeta[]; reranked?: boolean } | null>(null);
+  const [canRerank, setCanRerank] = useState(false);
+  const useRerank = smart && canRerank && sort === "relevance";
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const { user } = useAuth();
@@ -41,6 +44,13 @@ export function SearchPage() {
     api<{ ids: string[] }>("/library/ids")
       .then((r) => setSavedIds(new Set(r.ids)))
       .catch(() => setSavedIds(null));
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return setCanRerank(false);
+    api<{ active: boolean }>("/settings/decision")
+      .then((r) => setCanRerank(r.active))
+      .catch(() => setCanRerank(false));
   }, [user]);
 
   useEffect(() => {
@@ -74,16 +84,17 @@ export function SearchPage() {
     let cancelled = false;
     const params = new URLSearchParams({ q, sort, start: String(start), max: String(PAGE) });
     if (cat) params.set("category", cat);
+    if (useRerank) params.set("rerank", "1");
     setLoading(true);
     setError(null);
-    api<{ total: number; papers: PaperMeta[] }>(`/search?${params}`)
+    api<{ total: number; papers: PaperMeta[]; reranked?: boolean }>(`/search?${params}`)
       .then((d) => !cancelled && setData(d))
       .catch((e) => !cancelled && setError((e as Error).message))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
-  }, [q, cat, sort, start]);
+  }, [q, cat, sort, start, useRerank]);
 
   const go = (patch: Record<string, string | null>) => {
     const p = new URLSearchParams(url.search);
@@ -130,6 +141,12 @@ export function SearchPage() {
           <option value="submittedDate">Newest</option>
           <option value="lastUpdatedDate">Recently updated</option>
         </select>
+        {canRerank && sort === "relevance" && (
+          <label className="small" title="Re-rank the results on this page with your decision model (Clef)">
+            <input type="checkbox" checked={smart} onChange={(e) => go({ rerank: e.target.checked ? "1" : null })} /> Smart ranking
+          </label>
+        )}
+        {data?.reranked && <span className="muted small">Re-ranked by relevance</span>}
       </div>
 
       {!q && !cat && popular.length > 0 && (

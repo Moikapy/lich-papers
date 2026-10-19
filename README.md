@@ -14,6 +14,14 @@ full text and for remembering what you've learned across sessions.
   - **Paid OpenRouter models**: users who have credits on OpenRouter can pick any of its models.
   - **BYOK**: users can add keys for **OpenAI**, **Anthropic**, and **Ollama** (Ollama Cloud, or their own server over HTTPS).
   - **Fallback**: if the chosen model fails, lich fails over to the free router automatically.
+- **Decision model (optional)**: Cloudflare's [Clef / Clef Flash](https://ollama.com/library/clef) on Ollama, a small judge model that answers typed questions (yes/no, choice, score) through `/v1/systemone`. When it's on (Settings → Decision model, on the user's Ollama key, or the app's `DECISION_OLLAMA_KEY`):
+  - **Smart ranking**: re-ranks a page of search results, scoring each paper's relevance on its own.
+  - **Question routing**: points the tutor at the right tools (paper text, related work, your notes, or none) when the judge is confident.
+  - **Note tags**: tags saved notes by type (definition, method, result, math, …).
+  - **Figures**: `inspect_figure` lets the tutor look at a figure's image and ask it yes/no questions.
+  - **Grounding badge**: after each answer, checks its claims against the passages the tutor read and shows whether they're supported.
+
+  Everything fails open: without a decision model, or when it errors, the app works as before.
 
 ## Architecture
 
@@ -34,6 +42,12 @@ One Worker serves the static SPA and the API (`src/worker`). Each chat message b
 | `recall_knowledge` | Full-text search over the user's notes and session summaries |
 | `save_knowledge` | Saves a self-contained note for future sessions |
 | `search_arxiv` / `get_arxiv_paper` | Looks up related work |
+| `paper_figures` | Lists figures and captions (arXiv HTML papers) |
+| `inspect_figure` | Asks the decision model about a figure's image (decision-model plugin) |
+
+The decision-model features inside the agent ship as a lich plugin (`src/worker/decision-plugin.ts`): it adds
+`inspect_figure` and tags notes from an `after_tool_call` hook on `save_knowledge`. Routing runs before the agent
+(it changes the system prompt) and the grounding check after it (it needs the final answer), both in `src/worker/decide.ts`.
 
 The provider chain is the user's chosen provider and model first, then `openrouter/free`. The free router uses the
 user's OpenRouter key, the Pro key, or the optional shared server key, which is a one-time trial of `FREE_TRIAL_MESSAGES`

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, chatProviders, enc, postStream, PROVIDER_LABELS, timeAgo, type ChatProvider, type ChatMessage, type Collection, type ModelInfo, type PaperMeta, type ProviderId, type SavedStatus, type Session, type ToolUse } from "../api";
+import { api, chatProviders, enc, postStream, PROVIDER_LABELS, timeAgo, type ChatProvider, type ChatMessage, type Collection, type ModelInfo, type PaperMeta, type ProviderId, type SavedStatus, type Session, type ToolUse, type Grounding } from "../api";
 import { useAuth } from "../auth";
 import { Link } from "../components/Link";
 import { Markdown } from "../components/Markdown";
@@ -233,6 +233,8 @@ const TOOL_LABELS: Record<string, (a: Record<string, unknown>) => string> = {
   save_knowledge: (a) => (typeof a.title === "string" && a.title ? `Saved “${a.title}” to your notes` : "Saved a note to your notes"),
   search_arxiv: (a) => `Searched arXiv for “${a.query}”`,
   get_arxiv_paper: (a) => `Looked up arXiv:${a.arxiv_id}`,
+  paper_figures: () => "Listed the figures",
+  inspect_figure: (a) => `Looked at figure ${a.figure}`,
 };
 const toolLabel = (t: { name: string; args: Record<string, unknown> }) => (TOOL_LABELS[t.name]?.(t.args) ?? t.name);
 
@@ -430,6 +432,13 @@ function ChatPanel({ paper, sessionId, draft, setDraft }: { paper: PaperMeta; se
             else if (event === "done") {
               finished = true;
               setMessages((m) => [...m, { id: `local-${Date.now()}-a`, role: "assistant", content: data.content, meta: data.meta, created_at: Date.now() }]);
+            } else if (event === "grounding") {
+              setMessages((m) => {
+                const i = m.length - 1;
+                const last = m[i];
+                if (!last || last.role !== "assistant" || !last.meta) return m;
+                return [...m.slice(0, i), { ...last, meta: { ...last.meta, grounding: data } }];
+              });
             } else if (event === "error") {
               finished = true;
               throw new Error(data.message);
@@ -542,6 +551,7 @@ function ChatPanel({ paper, sessionId, draft, setDraft }: { paper: PaperMeta; se
             {m.role === "assistant" && (
               <div className="msg-footer">
                 {m.meta?.model && <span className="model-tag">{m.meta.model}</span>}
+                {m.meta?.grounding && <GroundingBadge g={m.meta.grounding} />}
                 <SaveNoteButton
                   content={m.content}
                   question={messages[i - 1]?.role === "user" ? messages[i - 1]!.content : ""}
@@ -622,6 +632,23 @@ function SaveNoteButton({ content, question, arxivId, sessionId }: { content: st
     <button className="linklike small save-note" onClick={save} disabled={state === "saving"} title={message ?? "Save this answer to your knowledge base"}>
       {state === "saving" ? "Saving…" : state === "error" ? "Couldn't save, retry" : "Save to notes"}
     </button>
+  );
+}
+
+const GROUNDING_TEXT: Record<Grounding["verdict"], string> = {
+  grounded: "Supported by the paper",
+  partly: "Partly supported",
+  unsupported: "Not supported by what it read",
+};
+
+/** The decision model's verdict on whether an answer's claims appear in the passages the tutor read. */
+function GroundingBadge({ g }: { g: Grounding }) {
+  const pct = Math.round(g.p * 100);
+  const basis = g.evidence === "passages" ? "the passages the tutor read" : "the paper's opening excerpt (the tutor didn't look anything up)";
+  return (
+    <span className={`grounding ${g.verdict}`} title={`Checked against ${basis}: ${pct}% likely every claim about the paper is supported. A hint, not a guarantee; it's weaker on math.`}>
+      {GROUNDING_TEXT[g.verdict]}
+    </span>
   );
 }
 

@@ -36,4 +36,7 @@
   // Shown in the Terms and Privacy Policy (set as plain vars in the dashboard):
   //   OPERATOR_NAME        – e.g. "Jane Doe"; CONTACT_EMAIL – privacy/takedown address; GOVERNING_LAW – e.g. "the State of Texas, USA"
   //   COMP_PRO_USER_IDS    – optional; comma-separated account IDs that get Pro for free (needs OPENROUTER_PROVISIONING_KEY)
+  // Decision model (optional; Clef on Ollama's /v1/systemone) for users who haven't picked their own:
+  //   DECISION_OLLAMA_KEY  – secret; Ollama Cloud key that pays for it
+  //   DECISION_MODEL       – var; default "clef-flash"   DECISION_OLLAMA_BASE – var; default https://ollama.com
 }

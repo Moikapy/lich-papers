@@ -273,6 +273,10 @@ label.consent input { margin-top: 0.3rem; }
 /* notes */
 .msg-footer { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.3rem; }
 .msg-footer .model-tag { margin-top: 0; }
+.grounding { font-size: 0.72rem; border-radius: 999px; padding: 0.05rem 0.5rem; border: 1px solid currentColor; cursor: help; }
+.grounding.grounded { color: var(--ok); }
+.grounding.partly { color: var(--muted); }
+.grounding.unsupported { color: var(--danger); }
 .save-note { padding: 0; font-size: 0.75rem; color: var(--muted); }
 .save-note:hover:not(:disabled) { color: var(--accent); }
 .save-note.done { color: var(--ok); }

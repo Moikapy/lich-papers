@@ -36,6 +36,15 @@ export interface Env {
   /** Dev/testing only: override the Stripe and OpenRouter management API base URLs. */
   STRIPE_API_BASE?: string;
   OPENROUTER_MGMT_BASE?: string;
+  /**
+   * Optional server-funded decision model (Ollama /v1/systemone, e.g. Clef Flash) for users who
+   * haven't picked their own: search re-ranking, question routing, note tags, grounding checks.
+   */
+  DECISION_OLLAMA_KEY?: string;
+  /** Ollama server for the decision model (default Ollama Cloud). */
+  DECISION_OLLAMA_BASE?: string;
+  /** Decision model name (default "clef-flash"). */
+  DECISION_MODEL?: string;
   /** "1" lets provider base URLs use http:// (local development only). */
   ALLOW_INSECURE_PROVIDER_URLS?: string;
 }
