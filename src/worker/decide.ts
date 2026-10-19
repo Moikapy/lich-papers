@@ -2,7 +2,8 @@ import type { Env, User } from "./env";
 import { isOllamaCloud, loadKeys, ollamaModelName, OLLAMA_CLOUD_BASE } from "./providers";
 
 /**
- * Decision models (Clef, Clef Flash, …) served by Ollama's /v1/systemone endpoint. They don't chat:
+ * Decision models (Clef, Clef Flash, …) served by Ollama's /v1/systemone endpoint or by Workers AI
+ * (`env.AI`, same System One request and response). They don't chat:
  * they take a `state` (text, plus optional images) and a set of typed questions, and return one
  * decision per question. Every caller treats them as optional: on any failure they get null and
  * carry on as if no decision model were configured.
@@ -16,12 +17,32 @@ export const DEFAULT_DECISION_MODEL = "clef-flash";
 /** Stored in users.decision_model to switch decisions off even when the server offers them. */
 export const DECISIONS_OFF = "off";
 
-export interface DecisionConfig {
-  base_url: string;
-  api_key?: string;
-  model: string;
-  /** Who pays: the user's own Ollama key, or the server's. */
-  source: "user" | "server";
+export type DecisionConfig =
+  | {
+      kind?: "ollama";
+      base_url: string;
+      api_key?: string;
+      model: string;
+      /** Who pays: the user's own Ollama key, or the server's. */
+      source: "user" | "server";
+    }
+  | {
+      kind: "workers_ai";
+      ai: Pick<Ai, "run">;
+      model: WorkersAiModel;
+      /** Workers AI is always billed to the app's Cloudflare account. */
+      source: "server";
+    };
+
+/** Clef models on Workers AI, by their System One model selector. */
+export const WORKERS_AI_MODELS = { clef: "@cf/cloudflare/clef", "clef-flash": "@cf/cloudflare/clef-flash" } as const;
+export type WorkersAiModel = keyof typeof WORKERS_AI_MODELS;
+const isWorkersAiModel = (m: string): m is WorkersAiModel => m in WORKERS_AI_MODELS;
+
+/** An image for a vision decision model: raw base64 plus its media type. */
+export interface DecisionImage {
+  base64: string;
+  type: string;
 }
 
 export type Question =
@@ -48,7 +69,8 @@ export async function userDecisionModel(env: Env, userId: string): Promise<strin
 /**
  * Which decision model to use for a user, if any:
  *   1. the model they picked, on their own Ollama key (cloud or self-hosted);
- *   2. otherwise the server's DECISION_OLLAMA_KEY, when set;
+ *   2. otherwise the app's shared one: Workers AI (the `AI` binding) when DECISION_BACKEND is
+ *      "workers-ai", or Ollama when DECISION_OLLAMA_KEY / a self-hosted DECISION_OLLAMA_BASE is set;
  *   3. otherwise none.
  */
 export async function decisionConfig(env: Env, user: Pick<User, "id"> | null): Promise<DecisionConfig | null> {
@@ -65,6 +87,19 @@ export async function decisionConfig(env: Env, user: Pick<User, "id"> | null): P
       };
     }
   }
+  return serverDecisionConfig(env);
+}
+
+/** The app's shared decision model, if the server has one configured. */
+export function serverDecisionConfig(env: Env): DecisionConfig | null {
+  if (env.DECISION_BACKEND === "workers-ai") {
+    const model = (env.DECISION_MODEL ?? DEFAULT_DECISION_MODEL).trim();
+    if (!env.AI || !isWorkersAiModel(model)) {
+      console.warn("DECISION_BACKEND=workers-ai needs the AI binding and DECISION_MODEL of clef or clef-flash");
+      return null;
+    }
+    return { kind: "workers_ai", ai: env.AI, model, source: "server" };
+  }
   if (env.DECISION_OLLAMA_KEY || (env.DECISION_OLLAMA_BASE && !isOllamaCloud(env.DECISION_OLLAMA_BASE))) {
     const base = env.DECISION_OLLAMA_BASE ?? OLLAMA_CLOUD_BASE;
     return {
@@ -77,7 +112,10 @@ export async function decisionConfig(env: Env, user: Pick<User, "id"> | null): P
   return null;
 }
 
-/** Request body for POST /v1/systemone (see ollama/ollama docs/capabilities/decision.mdx). */
+/**
+ * System One request body (ollama/ollama docs/capabilities/decision.mdx; Workers AI's Clef schema).
+ * Ollama takes images as bare base64; Workers AI as data URLs.
+ */
 export function toWire(model: string, state: string | object, questions: Record<string, Question>, images?: string[]): unknown {
   const qs: Record<string, unknown> = {};
   for (const [name, q] of Object.entries(questions)) {
@@ -138,21 +176,33 @@ export async function decide<Q extends Record<string, Question>>(
   cfg: DecisionConfig,
   state: string | object,
   questions: Q,
-  opts: { images?: string[]; timeoutMs?: number; fetch_fn?: typeof fetch } = {},
+  opts: { images?: DecisionImage[]; timeoutMs?: number; fetch_fn?: typeof fetch } = {},
 ): Promise<Partial<Record<keyof Q, Answer>> | null> {
   try {
-    const res = await (opts.fetch_fn ?? fetch)(`${cfg.base_url}/v1/systemone`, {
-      method: "POST",
-      headers: { "content-type": "application/json", ...(cfg.api_key ? { authorization: `Bearer ${cfg.api_key}` } : {}) },
-      body: JSON.stringify(toWire(cfg.model, state, questions, opts.images)),
-      signal: AbortSignal.timeout(opts.timeoutMs ?? 15_000),
-    });
-    if (!res.ok) {
-      const err = (await res.json().catch(() => null)) as { error?: string } | null;
-      console.warn("decision model failed", res.status, err?.error ?? "");
-      return null;
+    const timeoutMs = opts.timeoutMs ?? 15_000;
+    let body: unknown;
+    if (cfg.kind === "workers_ai") {
+      const images = opts.images?.map((i) => `data:${i.type};base64,${i.base64}`);
+      const run = cfg.ai.run(WORKERS_AI_MODELS[cfg.model] as Parameters<Ai["run"]>[0], toWire(cfg.model, state, questions, images) as never);
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const timeout = new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error("Workers AI decision timed out")), timeoutMs)));
+      const result = (await Promise.race([run, timeout]).finally(() => clearTimeout(timer))) as { answers?: unknown; result?: unknown };
+      // Workers AI returns the model output directly; the REST API wraps it in `result`.
+      body = result?.answers ? result : result?.result;
+    } else {
+      const res = await (opts.fetch_fn ?? fetch)(`${cfg.base_url}/v1/systemone`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...(cfg.api_key ? { authorization: `Bearer ${cfg.api_key}` } : {}) },
+        body: JSON.stringify(toWire(cfg.model, state, questions, opts.images?.map((i) => i.base64))),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!res.ok) {
+        const err = (await res.json().catch(() => null)) as { error?: string } | null;
+        console.warn("decision model failed", res.status, err?.error ?? "");
+        return null;
+      }
+      body = await res.json();
     }
-    const body = await res.json();
     const out: Partial<Record<keyof Q, Answer>> = {};
     for (const [name, q] of Object.entries(questions)) {
       const a = readAnswer(body, name, q);
@@ -381,13 +431,13 @@ export const FIGURE_KINDS = {
 export async function inspectFigure(
   cfg: DecisionConfig,
   caption: string,
-  imageBase64: string,
+  image: DecisionImage,
   question?: string,
   opts: { fetch_fn?: typeof fetch } = {},
 ): Promise<{ kind?: string; kind_p?: number; answer_p?: number } | null> {
   const questions: Record<string, Question> = { kind: { type: "choice", question: "What kind of figure is the image?", options: FIGURE_KINDS } };
   if (question) questions.ask = { type: "noul", question: `About the image: ${question}` };
-  const answers = await decide(cfg, { caption: cap(caption, 2000) }, questions, { images: [imageBase64], timeoutMs: 20_000, fetch_fn: opts.fetch_fn });
+  const answers = await decide(cfg, { caption: cap(caption, 2000) }, questions, { images: [image], timeoutMs: 20_000, fetch_fn: opts.fetch_fn });
   if (!answers) return null;
   const k = answers.kind;
   const a = answers.ask;

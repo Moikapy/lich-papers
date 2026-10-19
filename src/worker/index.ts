@@ -8,7 +8,7 @@ import { hashPassword, verifyPassword } from "./crypto";
 import { isPro, PROVIDERS, type AppEnv, type ChatProvider, type Ctx, type Env, type ProviderId, type User } from "./env";
 import { createCollection, deleteCollection, listCollections, listSaved, popularPapers, renameCollection, savedStatus, savePaper, unsavePaper } from "./library";
 import { addKnowledge, assertCanAddNote, autoTagNote, listKnowledge, NoteLimitError, searchKnowledge } from "./knowledge";
-import { checkGrounding, decisionConfig, DECISION_MODELS, DECISIONS_OFF, rerank, routeQuestion, routingHint, userDecisionModel } from "./decide";
+import { checkGrounding, decisionConfig, DECISION_MODELS, DECISIONS_OFF, rerank, routeQuestion, routingHint, serverDecisionConfig, userDecisionModel } from "./decide";
 import { outline } from "./paper-text";
 import { decisionPlugin } from "./decision-plugin";
 import { figureLoader, paperTools, runChat, safeProviderMessage, summarize, systemPrompt, type Budget } from "./agent";
@@ -233,7 +233,7 @@ app.get("/settings", requireUser, async (c) => {
     .first<{ plan: string; plan_status: string | null; plan_renews_at: number | null; stripe_customer_id: string | null }>();
   const proKey = isPro(user) ? await loadProKey(c.env, user.id) : null;
   const decisionModel = await userDecisionModel(c.env, user.id);
-  const serverDecisions = !!(c.env.DECISION_OLLAMA_KEY || (c.env.DECISION_OLLAMA_BASE && !isOllamaCloud(c.env.DECISION_OLLAMA_BASE)));
+  const serverDecisions = !!serverDecisionConfig(c.env);
   return c.json({
     default_provider: user.default_provider,
     default_model: user.default_model,

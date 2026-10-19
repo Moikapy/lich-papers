@@ -609,7 +609,8 @@ function DecisionCard({ decision, ollamaConnected, reload }: { decision: Decisio
       <h3>Decision model</h3>
       <p className="small">
         A small judge model (Cloudflare's Clef on Ollama) that re-ranks search results, steers the tutor to the right tools, tags your notes,
-        looks at figures, and checks answers against the paper. It runs on your Ollama key, alongside your chat model.
+        looks at figures, and checks answers against the paper. Pick Clef here to run it on your own Ollama key, or keep the default to use
+        the app's shared one when it's available.
       </p>
       <p className="small">
         Status: <strong>{decision.active ? "on" : "off"}</strong>

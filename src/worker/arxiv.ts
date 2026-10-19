@@ -522,17 +522,20 @@ export async function getFigures(env: Env, id: string, ctx?: Ctx): Promise<Figur
 
 const MAX_FIGURE_BYTES = 4 * 1024 * 1024;
 
-/** Downloads one figure image as base64, or null if it isn't a reasonably sized image on arXiv. */
-export async function fetchFigureImage(env: Env, fig: Figure): Promise<string | null> {
+/** Raster formats the Clef models accept. */
+const FIGURE_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+
+/** Downloads one figure image as base64, or null if it isn't a reasonably sized PNG/JPEG/WebP on arXiv. */
+export async function fetchFigureImage(env: Env, fig: Figure): Promise<{ base64: string; type: string } | null> {
   const host = new URL(fig.src).hostname;
   if (host !== "arxiv.org" && !host.endsWith(".arxiv.org")) return null;
   const res = await arxivFetch(env, fig.src);
-  const type = res.headers.get("content-type") ?? "";
-  // Vector images aren't something the decision model can read.
-  if (!res.ok || !type.startsWith("image/") || type.includes("svg")) return null;
+  const type = (res.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
+  // SVG, GIF and other formats aren't something the decision model can read.
+  if (!res.ok || !FIGURE_TYPES.has(type)) return null;
   const buf = new Uint8Array(await res.arrayBuffer());
   if (buf.length > MAX_FIGURE_BYTES) return null;
   let bin = "";
   for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
-  return btoa(bin);
+  return { base64: btoa(bin), type };
 }

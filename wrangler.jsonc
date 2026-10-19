@@ -19,6 +19,8 @@
       "migrations_dir": "migrations"
     }
   ],
+  // Workers AI, for the optional shared decision model (Clef). Only used when DECISION_BACKEND is "workers-ai".
+  "ai": { "binding": "AI" },
   "vars": {
     "APP_NAME": "Lich Papers",
     "DEFAULT_MODEL": "openrouter/free",
@@ -36,7 +38,9 @@
   // Shown in the Terms and Privacy Policy (set as plain vars in the dashboard):
   //   OPERATOR_NAME        – e.g. "Jane Doe"; CONTACT_EMAIL – privacy/takedown address; GOVERNING_LAW – e.g. "the State of Texas, USA"
   //   COMP_PRO_USER_IDS    – optional; comma-separated account IDs that get Pro for free (needs OPENROUTER_PROVISIONING_KEY)
-  // Decision model (optional; Clef on Ollama's /v1/systemone) for users who haven't picked their own:
-  //   DECISION_OLLAMA_KEY  – secret; Ollama Cloud key that pays for it
-  //   DECISION_MODEL       – var; default "clef-flash"   DECISION_OLLAMA_BASE – var; default https://ollama.com
+  // Shared decision model (optional; Clef) for users who haven't picked their own. Either:
+  //   DECISION_BACKEND = "workers-ai" – var; runs on Workers AI via the AI binding, billed to this account
+  //                                     (Clef Flash $0.09 / Clef $0.24 per M input tokens, no output charge)
+  //   DECISION_OLLAMA_KEY  – or a secret; Ollama Cloud key that pays for it (DECISION_OLLAMA_BASE – var; default https://ollama.com)
+  //   DECISION_MODEL       – var; "clef-flash" (default) or "clef"
 }

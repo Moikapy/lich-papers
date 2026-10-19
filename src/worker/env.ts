@@ -41,9 +41,13 @@ export interface Env {
    * haven't picked their own: search re-ranking, question routing, note tags, grounding checks.
    */
   DECISION_OLLAMA_KEY?: string;
+  /** "workers-ai" runs the shared decision model on Workers AI through the AI binding. */
+  DECISION_BACKEND?: string;
+  /** Workers AI binding (for DECISION_BACKEND = "workers-ai"). */
+  AI?: Ai;
   /** Ollama server for the decision model (default Ollama Cloud). */
   DECISION_OLLAMA_BASE?: string;
-  /** Decision model name (default "clef-flash"). */
+  /** Decision model name (default "clef-flash"; "clef" or "clef-flash" on Workers AI). */
   DECISION_MODEL?: string;
   /** "1" lets provider base URLs use http:// (local development only). */
   ALLOW_INSECURE_PROVIDER_URLS?: string;

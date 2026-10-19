@@ -14,7 +14,7 @@ full text and for remembering what you've learned across sessions.
   - **Paid OpenRouter models**: users who have credits on OpenRouter can pick any of its models.
   - **BYOK**: users can add keys for **OpenAI**, **Anthropic**, and **Ollama** (Ollama Cloud, or their own server over HTTPS).
   - **Fallback**: if the chosen model fails, lich fails over to the free router automatically.
-- **Decision model (optional)**: Cloudflare's [Clef / Clef Flash](https://ollama.com/library/clef) on Ollama, a small judge model that answers typed questions (yes/no, choice, score) through `/v1/systemone`. When it's on (Settings → Decision model, on the user's Ollama key, or the app's `DECISION_OLLAMA_KEY`):
+- **Decision model (optional)**: Cloudflare's [Clef / Clef Flash](https://ollama.com/library/clef) on Ollama, a small judge model that answers typed questions (yes/no, choice, score) through `/v1/systemone`. It runs on the user's own Ollama key (Settings → Decision model), or on the app's shared one: Workers AI through the `AI` binding (`DECISION_BACKEND=workers-ai`; Clef Flash is $0.09 per million input tokens, no output charge) or `DECISION_OLLAMA_KEY`. When it's on:
   - **Smart ranking**: re-ranks a page of search results, scoring each paper's relevance on its own.
   - **Question routing**: points the tutor at the right tools (paper text, related work, your notes, or none) when the judge is confident.
   - **Note tags**: tags saved notes by type (definition, method, result, math, …).

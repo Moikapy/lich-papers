@@ -7,6 +7,7 @@ import {
   readAnswer,
   rerank,
   routeQuestion,
+  serverDecisionConfig,
   tagNote,
   toWire,
   type DecisionConfig,
@@ -163,5 +164,42 @@ describe("ollamaModelName", () => {
   it("drops a :cloud tag for the cloud API", () => {
     expect(ollamaModelName("clef:cloud", "https://ollama.com")).toBe("clef");
     expect(ollamaModelName("clef:27b-cloud", null)).toBe("clef:27b");
+  });
+});
+
+describe("Workers AI backend", () => {
+  const ai = (output: unknown) => {
+    const calls: { model: string; input: any }[] = [];
+    return { calls, binding: { run: async (model: string, input: unknown) => (calls.push({ model, input }), output) } as any };
+  };
+
+  it("runs Clef through env.AI with the same System One body", async () => {
+    const w = ai({ model: "clef-flash", answers: { x: { type: "noul", noul: 0.7 } } });
+    const r = await decide({ kind: "workers_ai", ai: w.binding, model: "clef-flash", source: "server" }, { a: 1 }, { x: { type: "noul", question: "q" } });
+    expect(r).toEqual({ x: { type: "noul", p: 0.7 } });
+    expect(w.calls[0]!.model).toBe("@cf/cloudflare/clef-flash");
+    expect(w.calls[0]!.input).toEqual({ model: "clef-flash", state: { a: 1 }, questions: { x: { type: "noul", instructions: "q" } } });
+  });
+  it("sends images as data URLs (Ollama gets bare base64)", async () => {
+    const w = ai({ answers: {} });
+    await decide({ kind: "workers_ai", ai: w.binding, model: "clef", source: "server" }, "s", { x: { type: "noul", question: "q" } }, { images: [{ base64: "aGk=", type: "image/png" }] });
+    expect(w.calls[0]!.input.images).toEqual(["data:image/png;base64,aGk="]);
+    const o = fakeOllama(() => ({ answers: {} }));
+    await decide(cfg, "s", { x: { type: "noul", question: "q" } }, { images: [{ base64: "aGk=", type: "image/png" }], fetch_fn: o.fetch_fn });
+    expect(o.requests[0].body.images).toEqual(["aGk="]);
+  });
+  it("unwraps a REST-style { result } and fails open on errors", async () => {
+    const wrapped = ai({ result: { answers: { x: { type: "noul", noul: 0.3 } } } });
+    expect(await decide({ kind: "workers_ai", ai: wrapped.binding, model: "clef", source: "server" }, "s", { x: { type: "noul", question: "q" } })).toEqual({ x: { type: "noul", p: 0.3 } });
+    const broken = { run: async () => Promise.reject(new Error("5007: no such model")) } as any;
+    expect(await decide({ kind: "workers_ai", ai: broken, model: "clef", source: "server" }, "s", { x: { type: "noul", question: "q" } })).toBeNull();
+  });
+  it("is the shared default only when DECISION_BACKEND=workers-ai and the model is a Clef", () => {
+    const AI = { run: async () => ({}) };
+    expect(serverDecisionConfig({ AI, DECISION_BACKEND: "workers-ai" } as any)).toMatchObject({ kind: "workers_ai", model: "clef-flash" });
+    expect(serverDecisionConfig({ AI, DECISION_BACKEND: "workers-ai", DECISION_MODEL: "clef" } as any)).toMatchObject({ model: "clef" });
+    expect(serverDecisionConfig({ AI, DECISION_BACKEND: "workers-ai", DECISION_MODEL: "nimble" } as any)).toBeNull();
+    expect(serverDecisionConfig({ AI } as any)).toBeNull();
+    expect(serverDecisionConfig({ DECISION_OLLAMA_KEY: "k" } as any)).toMatchObject({ base_url: "https://ollama.com", model: "clef-flash" });
   });
 });
