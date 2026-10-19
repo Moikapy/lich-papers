@@ -23,12 +23,6 @@
   "ai": { "binding": "AI" },
   // Plain variables are set in the Cloudflare dashboard, not here; keep_vars stops deploys from deleting them.
   "keep_vars": true
-  // Variables (Workers & Pages → lich-papers → Settings → Variables and Secrets):
-  //   APP_NAME             – "Lich Papers"
-  //   DEFAULT_MODEL        – "openrouter/free"
-  //   PRO_PRICE_CENTS      – "1000" ($10/month); PRO_MONTHLY_CAP_USD – "4" (per-subscriber model spend cap)
-  //   PRO_DEFAULT_MODEL    – e.g. "google/gemini-2.5-flash"
-  //   FREE_TRIAL_MESSAGES  – "10" (one-time trial on the shared OPENROUTER_API_KEY)
   // Secrets (set with `wrangler secret put`):
   //   ENCRYPTION_KEY       – required; base64 32-byte key used to encrypt stored API keys
   //   OPENROUTER_API_KEY   – optional; server key for a one-time free trial on the free router
