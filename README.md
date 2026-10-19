@@ -100,13 +100,7 @@ setup, every push to `main` deploys.
    - Build command: `npm run build`
    - Deploy command: `npx wrangler deploy && npx wrangler d1 migrations apply lich-papers --remote`
    - (Optional) Non-production branch deploy command: `npx wrangler versions upload`. This gives PRs preview URLs. Preview builds share the production D1 database.
-3. **Add variables and secrets.** Go to **Worker → Settings → Variables and Secrets**. Plain variables live here, not in
-   `wrangler.jsonc` (`keep_vars` stops deploys from deleting them):
-   - Variables: `APP_NAME` (`Lich Papers`), `DEFAULT_MODEL` (`openrouter/free`), `PRO_PRICE_CENTS` (`1000`),
-     `PRO_MONTHLY_CAP_USD` (`4`), `PRO_DEFAULT_MODEL` (e.g. `google/gemini-2.5-flash`), `FREE_TRIAL_MESSAGES` (`10`), and
-     optionally `DECISION_BACKEND` (`workers-ai`) and `DECISION_MODEL` (`clef-flash` or `clef`) for the shared decision model.
-
-   Secrets:
+3. **Add secrets.** Go to **Worker → Settings → Variables and Secrets**:
    - `ENCRYPTION_KEY` (**required**). Generate it with `openssl rand -base64 32`. Don't change it later: keys already stored become unreadable.
    - `OPENROUTER_API_KEY` (optional). A server key for the one-time trial (`FREE_TRIAL_MESSAGES`, default 10).
    - Pro (all three are needed, or the upgrade button shows "coming soon"):
@@ -117,7 +111,7 @@ setup, every push to `main` deploys.
 5. **Set up Stripe (for Pro).**
    - **Webhook.** In Stripe → Developers → Webhooks, add the endpoint `https://<your-domain>/api/billing/webhook` with these events: `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`. Copy its signing secret into `STRIPE_WEBHOOK_SECRET`.
    - **Customer portal.** In Stripe → Settings → Billing → Customer portal, save the settings once (allow cancellation and payment-method updates). "Manage billing" won't work until you do.
-   - **No product setup needed.** Checkout creates the $10/month price inline. The price, cap and default model are the `PRO_*` variables from step 3.
+   - **No product setup needed.** Checkout creates the $10/month price inline. The price, cap and default model are the `PRO_*` vars in `wrangler.jsonc`.
    - **Free Pro for yourself or staff.** Sign up, copy your Account ID from Settings, and add it to the `COMP_PRO_USER_IDS` secret (comma-separated). On your next visit the account switches to Pro, with no Stripe involved and the same monthly cap. Remove the ID to undo. This uses IDs rather than emails because emails aren't verified, so anyone could register your address first.
    - **Check the default model.** Before launch, confirm that `PRO_DEFAULT_MODEL` is a current OpenRouter model ID with the price you expect.
 
