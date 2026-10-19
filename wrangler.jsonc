@@ -27,7 +27,7 @@
     // Pro plan: $10/month, with each subscriber's model spend capped at $4/month on their own OpenRouter key.
     "PRO_PRICE_CENTS": "1000",
     "PRO_MONTHLY_CAP_USD": "4",
-    "PRO_DEFAULT_MODEL": "google/gemini-2.5-flash",
+    "PRO_DEFAULT_MODEL": "google/gemini-3.5-flash",
     // One-time trial on the shared OPENROUTER_API_KEY, in messages.
     "FREE_TRIAL_MESSAGES": "10",
     // Shared decision model for every signed-in user: Clef (27B) on Workers AI, billed to this account.
