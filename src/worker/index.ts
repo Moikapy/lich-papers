@@ -11,7 +11,8 @@ import { addKnowledge, assertCanAddNote, autoTagNote, listKnowledge, NoteLimitEr
 import { checkGrounding, decisionConfig, DECISION_MODELS, DECISIONS_OFF, rerank, routeQuestion, routingHint, serverDecisionConfig, userDecisionModel } from "./decide";
 import { outline } from "./paper-text";
 import { decisionPlugin } from "./decision-plugin";
-import { figureLoader, paperTools, runChat, safeProviderMessage, summarize, systemPrompt, type Budget } from "./agent";
+import { recordFallbackUse } from "./workers-ai";
+import { figureLoader, paperTools, runChat, type UsageCounter, safeProviderMessage, summarize, systemPrompt, type Budget } from "./agent";
 import { applyComp, loadProKey, proAllowance, revokeProKey, proCapUsd, stripe, syncSubscription, verifyStripeSignature, type StripeSubscription } from "./billing";
 import {
   exchangeOpenRouterCode,
@@ -349,7 +350,7 @@ async function metered<T>(
   env: Env,
   userId: string,
   providers: ProviderConfig[],
-  run: (providers: ProviderConfig[], counter: { sharedCalls: number }) => Promise<T>,
+  run: (providers: ProviderConfig[], counter: UsageCounter) => Promise<T>,
 ): Promise<T> {
   const usesShared = providers.some((p) => p.name === SHARED_PROVIDER);
   const reserved = usesShared && (await reserveFreeUsage(env, userId));
@@ -362,12 +363,14 @@ async function metered<T>(
       });
     }
   }
-  const counter = { sharedCalls: 0 };
+  const counter: UsageCounter = { sharedCalls: 0 };
   try {
     return await run(usable, counter);
   } finally {
     // The trial counts messages: keep the reserved unit only if the shared key actually answered.
     if (reserved && counter.sharedCalls === 0) await adjustFreeUsage(env, userId, -1).catch((e) => console.warn("usage settle failed", e));
+    // The fallback cap counts messages it answered (any number of calls within one message).
+    if (counter.fallbackCalls) await recordFallbackUse(env, userId).catch((e) => console.warn("fallback usage failed", e));
   }
 }
 

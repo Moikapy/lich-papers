@@ -219,13 +219,18 @@ function Privacy({ app, operator, contact }: Ctx) {
           <strong>Free models</strong> (including OpenRouter's free router) are often offered by providers that may log prompts or use them to
           improve their models. Don't send anything sensitive through free models.
         </li>
+        <li>
+          <strong>Cloudflare Workers AI</strong> answers when the other providers fail (for example, when free models hit their daily limit),
+          up to a daily limit per account. It also runs the small decision model that ranks search results, tags notes, and checks answers
+          against the paper.
+        </li>
       </ul>
       <p>We don't use your conversations to train models, and we don't share them with anyone else except as described here.</p>
 
       <h2>Who we share data with</h2>
       <p>Only service providers that run {app} for us, each under its own terms:</p>
       <ul>
-        <li>Cloudflare: hosting, database, and logs.</li>
+        <li>Cloudflare: hosting, database, logs, and Workers AI (fallback answers and the decision model).</li>
         <li>Stripe: subscription payments.</li>
         <li>OpenRouter, and the model providers it routes to, or your chosen provider: AI answers.</li>
         <li>arXiv: we fetch papers, licenses, and metadata from it; it learns which papers are requested, not who requested them.</li>
