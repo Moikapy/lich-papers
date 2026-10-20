@@ -113,7 +113,7 @@ export function LibraryPage() {
         {error && <p className="error">{error}</p>}
         {papers && papers.length === 0 && (
           <p className="muted">
-            Nothing saved yet. <Link href="/">Find a paper</Link> and press Save.
+            Nothing saved yet. <Link href="/search">Find a paper</Link> and press Save.
           </p>
         )}
         {papers && papers.length > 0 && shown.length === 0 && <p className="muted">No papers here yet.</p>}

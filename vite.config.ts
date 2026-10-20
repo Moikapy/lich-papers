@@ -43,7 +43,9 @@ function cspMeta(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [lichWorkersCompat(), react(), cloudflare(), cspMeta()],
+  // The AI binding (Clef, the chat fallback) is always remote, which needs a Cloudflare login. Local dev runs without it
+  // (those features fail open) unless REMOTE_BINDINGS=1 and you're logged in with `wrangler login`.
+  plugins: [lichWorkersCompat(), react(), cloudflare({ remoteBindings: process.env.REMOTE_BINDINGS === "1" }), cspMeta()],
   environments: {
     // Keep lich out of dev pre-bundling so the transform above also applies under `vite dev`.
     lich_papers: { optimizeDeps: { exclude: ["@moikapy/lich"] } },

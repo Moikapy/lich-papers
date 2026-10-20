@@ -42,7 +42,7 @@ export function SessionsPage() {
         {error && <p className="error">{error}</p>}
         {sessions && sessions.length === 0 && (
           <p className="muted">
-            No conversations yet. <Link href="/">Find a paper</Link> and ask it something.
+            No conversations yet. <Link href="/search">Find a paper</Link> and ask it something.
           </p>
         )}
         <ul className="session-list">

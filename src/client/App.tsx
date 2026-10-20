@@ -1,9 +1,11 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { api, type User } from "./api";
 import { AuthContext } from "./auth";
 import { Link } from "./components/Link";
 import { navigate, useLocation } from "./router";
 import { SearchPage } from "./pages/Search";
+// The editor is the heaviest part of the app: load it only for signed-in users.
+const WorkspacePage = lazy(() => import("./pages/Workspace").then((m) => ({ default: m.WorkspacePage })));
 import { PaperPage } from "./pages/Paper";
 import { SessionsPage } from "./pages/Sessions";
 import { KnowledgePage } from "./pages/Knowledge";
@@ -30,7 +32,13 @@ export function App() {
   const path = url.pathname;
   let page: React.ReactNode;
   const paperMatch = path.match(/^\/paper\/(.+)$/);
-  if (paperMatch) page = <PaperPage key={paperMatch[1]} arxivId={decodeURIComponent(paperMatch[1]!)} sessionId={url.searchParams.get("session")} />;
+  const pageMatch = path.match(/^\/p\/([\w-]+)$/);
+  // Signed-in users land in their pages; everyone else gets paper search.
+  const workspace = !!pageMatch || (path === "/" && !!user);
+  if (pageMatch) page = <WorkspacePage pageId={pageMatch[1]!} />;
+  else if (path === "/" && user) page = <WorkspacePage pageId={null} />;
+  else if (path === "/" && loading) page = null;
+  else if (paperMatch) page = <PaperPage key={paperMatch[1]} arxivId={decodeURIComponent(paperMatch[1]!)} sessionId={url.searchParams.get("session")} />;
   else if (path === "/sessions") page = <SessionsPage />;
   else if (path === "/library") page = <LibraryPage />;
   else if (path === "/knowledge") page = <KnowledgePage />;
@@ -39,6 +47,7 @@ export function App() {
   else if (path === "/openrouter/callback") page = <OpenRouterCallback />;
   else if (LEGAL_PATHS[path]) page = <LegalPage key={path} doc={LEGAL_PATHS[path]!} />;
   else page = <SearchPage />;
+  const wide = !!paperMatch || workspace;
 
   const logout = async () => {
     try {
@@ -51,14 +60,15 @@ export function App() {
     navigate("/");
   };
 
+  const isActive = (href: string) => path === href || (href === "/" && !!pageMatch);
   const navLink = (href: string, label: string) => (
-    <Link href={href} className={path === href ? "active" : undefined} aria-current={path === href ? "page" : undefined}>
+    <Link href={href} className={isActive(href) ? "active" : undefined} aria-current={isActive(href) ? "page" : undefined}>
       {label}
     </Link>
   );
 
   const tab = (href: string, label: string, icon: React.ReactNode) => (
-    <Link href={href} className={path === href ? "active" : undefined} aria-current={path === href ? "page" : undefined}>
+    <Link href={href} className={isActive(href) ? "active" : undefined} aria-current={isActive(href) ? "page" : undefined}>
       {icon}
       <span>{label}</span>
     </Link>
@@ -66,7 +76,7 @@ export function App() {
 
   return (
     <AuthContext.Provider value={{ user, loading, setUser, logout }}>
-      <div className={`app${paperMatch ? " paper-mode" : ""}${user && !paperMatch ? " has-tabbar" : ""}`}>
+      <div className={`app${paperMatch ? " paper-mode" : ""}${workspace ? " workspace-mode" : ""}${user && !paperMatch ? " has-tabbar" : ""}`}>
         <a href="#main" className="skip-link">
           Skip to main content
         </a>
@@ -75,7 +85,8 @@ export function App() {
             <span className="glyph">⚱</span> Lich Papers
           </Link>
           <nav aria-label="Main">
-            <span className="desk">{navLink("/", "Search")}</span>
+            {user && <span className="desk">{navLink("/", "Pages")}</span>}
+            <span className="desk">{navLink(user ? "/search" : "/", "Search")}</span>
             {user && <span className="desk">{navLink("/library", "Library")}</span>}
             {user && <span className="desk">{navLink("/sessions", "History")}</span>}
             {user && <span className="desk">{navLink("/knowledge", "Knowledge")}</span>}
@@ -94,10 +105,10 @@ export function App() {
             )}
           </nav>
         </header>
-        <main id="main" tabIndex={-1} className={paperMatch ? "main wide" : "main"}>
-          {page}
+        <main id="main" tabIndex={-1} className={wide ? "main wide" : "main"}>
+          <Suspense fallback={<p className="muted" style={{ padding: "2rem" }}>Loading…</p>}>{page}</Suspense>
         </main>
-        {!paperMatch && (
+        {!wide && (
           <footer className="site-footer">
             <Link href="/terms">Terms</Link>
             <Link href="/privacy">Privacy</Link>
@@ -108,7 +119,8 @@ export function App() {
         )}
         {user && !paperMatch && (
           <nav className="tabbar" aria-label="Sections">
-            {tab("/", "Search", <Icon d="M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zm9 16-4.35-4.35" />)}
+            {tab("/", "Pages", <Icon d="M6 3h8l4 4v14H6zM14 3v4h4M9 12h6M9 16h6" />)}
+            {tab("/search", "Search", <Icon d="M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zm9 16-4.35-4.35" />)}
             {tab("/library", "Library", <Icon d="M6 3h12v18l-6-4.5L6 21z" />)}
             {tab("/sessions", "History", <Icon d="M12 7v5l3 2M3 12a9 9 0 1 0 3-6.7M3 4v4h4" />)}
             {tab("/knowledge", "Knowledge", <Icon d="M4 5a2 2 0 0 1 2-2h12v16H6a2 2 0 0 0-2 2V5zm0 16a2 2 0 0 1 2-2h12v2" />)}

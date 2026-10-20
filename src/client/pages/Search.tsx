@@ -100,7 +100,7 @@ export function SearchPage() {
     const p = new URLSearchParams(url.search);
     for (const [k, v] of Object.entries(patch)) (v ? p.set(k, v) : p.delete(k));
     if (!("start" in patch)) p.delete("start");
-    navigate(`/?${p}`);
+    navigate(`/search?${p}`);
   };
 
   return (
