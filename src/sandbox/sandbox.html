@@ -15,6 +15,11 @@
     <title>Lich sandbox</title>
   </head>
   <body>
+    <!-- Never shown: the app loads this page in a hidden, aria-hidden iframe. Landmarks for anyone opening it directly. -->
+    <main>
+      <h1>Lich code runtime</h1>
+      <p>This page runs code cells for Lich Papers. It has no content of its own.</p>
+    </main>
     <script>
       "use strict";
       // Pyodide's core comes from the app (/pyodide/, copied from the npm package at build time, with CORS so this
