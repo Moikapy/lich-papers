@@ -5,6 +5,7 @@ import type { Ctx, Env, User } from "./env";
 import { addKnowledge, assertCanAddNote, formatKnowledge, NoteLimitError, searchKnowledge, type KnowledgeRow } from "./knowledge";
 import { chunkText, outline, readRange, readSection, searchChunks } from "./paper-text";
 import { SHARED_PROVIDER } from "./providers";
+import { FALLBACK_PROVIDERS } from "./workers-ai";
 
 const EXCERPT_CHARS = 8000;
 
@@ -245,10 +246,17 @@ export function safeProviderMessage(raw: unknown): string {
   const status = Number(text.match(/\b([45]\d\d)\b/)?.[1] ?? 0);
   if (status === 401 || status === 403) return "authentication failed (check the API key)";
   if (status === 404) return "model or endpoint not found";
-  if (status === 429) return "rate limited or out of quota";
+  if (status === 429)
+    return "rate limited or out of quota. Free OpenRouter models allow about 50 requests a day unless the account has $10 of credits; add credits, pick another model, or try again later";
   if (status >= 500) return "the provider had an internal error";
   if (/timed? ?out|abort/i.test(text)) return "the request timed out";
   return "the request failed";
+}
+
+/** Calls that cost the app: on the shared trial key, and on the Workers AI fallback. */
+export interface UsageCounter {
+  sharedCalls: number;
+  fallbackCalls?: number;
 }
 
 export type StreamEvent =
@@ -328,8 +336,8 @@ export async function runChat(opts: {
   input: string;
   signal?: AbortSignal;
   onEvent?: (e: StreamEvent) => void;
-  /** Updated live so callers can still account for shared-key calls when the run throws. */
-  counter?: { sharedCalls: number };
+  /** Updated live so callers can still account for shared-key and fallback calls when the run throws. */
+  counter?: UsageCounter;
   budget?: Budget;
   /** Extra lich plugins (tools + hooks), e.g. the decision-model plugin. */
   plugins?: Plugin[];
@@ -344,6 +352,7 @@ export async function runChat(opts: {
         opts.onEvent?.({ type: "status", text: e.turn === 1 ? "Thinking…" : "Reading results…" });
         break;
       case "llm_end":
+        if (FALLBACK_PROVIDERS.has(e.result.provider_name) && opts.counter) opts.counter.fallbackCalls = (opts.counter.fallbackCalls ?? 0) + 1;
         if (e.result.provider_name === SHARED_PROVIDER) {
           sharedCalls++;
           if (opts.counter) opts.counter.sharedCalls = sharedCalls;
@@ -397,7 +406,7 @@ export async function summarize(
   providers: ProviderConfig[],
   paperTitle: string,
   transcript: { role: string; content: string }[],
-  counter?: { sharedCalls: number },
+  counter?: UsageCounter,
 ): Promise<{ text: string; sharedCalls: number }> {
   const convo = transcript
     .map((m) => `${m.role === "user" ? "User" : "Tutor"}: ${m.content}`)

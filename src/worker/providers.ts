@@ -3,6 +3,7 @@ import { HTTPException } from "hono/http-exception";
 import { decryptSecret, encryptSecret } from "./crypto";
 import { isPro, type ChatProvider, type Env, type ProviderId, type User } from "./env";
 import { loadProKey } from "./billing";
+import { FALLBACK_PROVIDERS, fallbackProvider } from "./workers-ai";
 
 export const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 export const FREE_ROUTER_MODEL = "openrouter/free";
@@ -97,8 +98,9 @@ export const PRO_PROVIDER = "pro";
 export const PRO_FREE_PROVIDER = "pro-free";
 
 /** Who pays for a reply, from the lich provider name that produced it. */
-export function billedTo(providerName: string | null): "user" | "pro" | "trial" {
+export function billedTo(providerName: string | null): "user" | "pro" | "trial" | "fallback" {
   if (providerName === SHARED_PROVIDER) return "trial";
+  if (providerName && FALLBACK_PROVIDERS.has(providerName)) return "fallback";
   if (providerName === PRO_PROVIDER || providerName === PRO_FREE_PROVIDER) return "pro";
   return "user";
 }
@@ -111,7 +113,9 @@ export interface ResolvedChain {
 /**
  * Builds the lich provider failover chain for a chat request:
  *   1. the requested (or user's default) provider + model, using the user's own key;
- *   2. the OpenRouter free router as a fallback, with the user's OpenRouter key or the server key.
+ *   2. the OpenRouter free router as a fallback, with the user's OpenRouter key or the server key;
+ *   3. last, the app's fallback (Ollama Cloud or Workers AI, capped per user per day), for when the
+ *      others fail, e.g. OpenRouter's free-model rate limit.
  */
 export async function resolveChain(
   env: Env,
@@ -214,6 +218,9 @@ export async function resolveChain(
         : "No model available. Connect OpenRouter (free) or add an API key in Settings.",
     });
   }
+  // Only a fallback: users with no usable provider still get the message above.
+  const lastResort = await fallbackProvider(env, user.id);
+  if (lastResort) chain.push(lastResort);
   const primary = chain[0]!;
   return { providers: chain, label: `${primary.name}/${primary.model}` };
 }

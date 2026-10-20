@@ -11,7 +11,9 @@ import { addKnowledge, assertCanAddNote, autoTagNote, listKnowledge, NoteLimitEr
 import { checkGrounding, decisionConfig, DECISION_MODELS, DECISIONS_OFF, rerank, routeQuestion, routingHint, serverDecisionConfig, userDecisionModel } from "./decide";
 import { outline } from "./paper-text";
 import { decisionPlugin } from "./decision-plugin";
-import { figureLoader, paperTools, runChat, safeProviderMessage, summarize, systemPrompt, type Budget } from "./agent";
+import { recordFallbackUse } from "./workers-ai";
+import { createPage, deletePage, getPage, importNotes, listPages, updatePage } from "./pages";
+import { figureLoader, paperTools, runChat, type UsageCounter, safeProviderMessage, summarize, systemPrompt, type Budget } from "./agent";
 import { applyComp, loadProKey, proAllowance, revokeProKey, proCapUsd, stripe, syncSubscription, verifyStripeSignature, type StripeSubscription } from "./billing";
 import {
   exchangeOpenRouterCode,
@@ -349,7 +351,7 @@ async function metered<T>(
   env: Env,
   userId: string,
   providers: ProviderConfig[],
-  run: (providers: ProviderConfig[], counter: { sharedCalls: number }) => Promise<T>,
+  run: (providers: ProviderConfig[], counter: UsageCounter) => Promise<T>,
 ): Promise<T> {
   const usesShared = providers.some((p) => p.name === SHARED_PROVIDER);
   const reserved = usesShared && (await reserveFreeUsage(env, userId));
@@ -362,12 +364,14 @@ async function metered<T>(
       });
     }
   }
-  const counter = { sharedCalls: 0 };
+  const counter: UsageCounter = { sharedCalls: 0 };
   try {
     return await run(usable, counter);
   } finally {
     // The trial counts messages: keep the reserved unit only if the shared key actually answered.
     if (reserved && counter.sharedCalls === 0) await adjustFreeUsage(env, userId, -1).catch((e) => console.warn("usage settle failed", e));
+    // The fallback cap counts messages it answered (any number of calls within one message).
+    if (counter.fallbackCalls) await recordFallbackUse(env, userId).catch((e) => console.warn("fallback usage failed", e));
   }
 }
 
@@ -596,6 +600,31 @@ app.post("/sessions/:id/messages", requireUser, async (c) => {
   });
 });
 
+// ---------------------------------------------------------------- pages
+
+app.get("/pages", requireUser, async (c) => c.json({ pages: await listPages(c.env, currentUser(c).id) }));
+
+app.post("/pages", requireUser, async (c) => {
+  const { parent_id, title, icon } = await json<{ parent_id: string | null; title: string; icon: string }>(c);
+  const page = await createPage(c.env, currentUser(c).id, { parent_id: parent_id ? String(parent_id) : null, title: String(title ?? ""), icon: icon ?? null });
+  return c.json({ page });
+});
+
+/** Copies saved notes and session summaries into pages (once per note). */
+app.post("/pages/import-notes", requireUser, async (c) => c.json(await importNotes(c.env, currentUser(c).id)));
+
+app.get("/pages/:id", requireUser, async (c) => c.json({ page: await getPage(c.env, currentUser(c).id, c.req.param("id")) }));
+
+app.patch("/pages/:id", requireUser, async (c) => {
+  const patch = await json<{ title: unknown; icon: unknown; content: unknown; text: unknown; parent_id: unknown; position: unknown }>(c);
+  return c.json(await updatePage(c.env, currentUser(c).id, c.req.param("id"), patch));
+});
+
+app.delete("/pages/:id", requireUser, async (c) => {
+  await deletePage(c.env, currentUser(c).id, c.req.param("id"));
+  return c.json({ ok: true });
+});
+
 // ---------------------------------------------------------------- knowledge
 
 app.get("/knowledge", requireUser, async (c) => {
@@ -729,7 +758,7 @@ app.get("/popular", async (c) => {
 app.get("/account/export", requireUser, async (c) => {
   const user = currentUser(c);
   const db = c.env.DB;
-  const [account, sessions, messages, knowledge, keys, usage, saved, collections, collectionPapers] = await Promise.all([
+  const [account, sessions, messages, knowledge, keys, usage, saved, collections, collectionPapers, pages] = await Promise.all([
     db.prepare("SELECT id, email, plan, plan_status, plan_renews_at, default_provider, default_model, created_at, terms_accepted_at, terms_version FROM users WHERE id = ?").bind(user.id).first(),
     db.prepare("SELECT id, arxiv_id, title, summary, builds_on, created_at, updated_at FROM chat_sessions WHERE user_id = ? ORDER BY created_at").bind(user.id).all(),
     db.prepare(
@@ -741,6 +770,7 @@ app.get("/account/export", requireUser, async (c) => {
     db.prepare("SELECT arxiv_id, created_at FROM saved_papers WHERE user_id = ? ORDER BY created_at").bind(user.id).all(),
     db.prepare("SELECT id, name, created_at FROM collections WHERE user_id = ? ORDER BY created_at").bind(user.id).all(),
     db.prepare("SELECT collection_id, arxiv_id FROM collection_papers WHERE user_id = ?").bind(user.id).all(),
+    db.prepare("SELECT id, parent_id, title, icon, content, format, position, created_at, updated_at FROM pages WHERE user_id = ? ORDER BY created_at").bind(user.id).all(),
   ]);
   const body = JSON.stringify(
     {
@@ -754,6 +784,7 @@ app.get("/account/export", requireUser, async (c) => {
       saved_papers: saved.results,
       collections: collections.results,
       collection_papers: collectionPapers.results,
+      pages: pages.results,
     },
     null,
     2,
@@ -786,6 +817,7 @@ app.post("/account/delete", requireUser, async (c) => {
   await c.env.DB.batch([
     c.env.DB.prepare(`DELETE FROM chat_messages WHERE session_id IN (${ownSessions})`).bind(user.id),
     c.env.DB.prepare("DELETE FROM knowledge WHERE user_id = ?").bind(user.id),
+    c.env.DB.prepare("DELETE FROM pages WHERE user_id = ?").bind(user.id),
     c.env.DB.prepare("DELETE FROM collection_papers WHERE user_id = ?").bind(user.id),
     c.env.DB.prepare("DELETE FROM collections WHERE user_id = ?").bind(user.id),
     c.env.DB.prepare("DELETE FROM saved_papers WHERE user_id = ?").bind(user.id),

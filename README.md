@@ -4,6 +4,14 @@ Search and read any paper on [arXiv](https://arxiv.org), and chat with an AI tut
 [`@moikapy/lich`](https://www.npmjs.com/package/@moikapy/lich) agent harness, with tools for reading the paper's
 full text and for remembering what you've learned across sessions.
 
+- **Pages**: your own workspace of nested pages with a block editor (headings, lists, to-dos, quotes, code, math), a `/`
+  command menu and Markdown shortcuts, saved as you type. Signed-in users land here; saved notes can be imported as pages.
+- **Code cells (notebooks)**: `/Python cell`, `/JavaScript cell` or `/TypeScript cell` add runnable cells to any page.
+  Shift+Enter runs a cell; cells on a page share variables per language; outputs (text, results, errors, matplotlib
+  plots) are saved with the page. Code runs in the browser, inside an opaque-origin sandboxed iframe
+  (`src/sandbox/sandbox.html`) in Web Workers, so it can't reach the app's cookies, API or DOM, and Stop kills a
+  runaway cell. Python is Pyodide (installed from npm, its core served at `/pyodide/`; numpy, pandas, matplotlib and
+  other packages load from Pyodide's CDN on first import); TypeScript is transpiled with Sucrase.
 - **Search all of arXiv**: free text, field queries (`au:hinton`, `ti:"diffusion"`), category filters, or paste an arXiv id/URL.
 - **Read**: full text in the app for openly licensed papers (CC BY, CC BY-SA, CC0), with attribution; otherwise the abstract with links to arXiv. PDFs open on arXiv.
 - **Chat with the paper**: the tutor grounds its answers in the paper. It searches and reads sections as needed and shows each step it took.
@@ -13,7 +21,11 @@ full text and for remembering what you've learned across sessions.
   - **Default**: OpenRouter's free router (`openrouter/free`). Users connect their OpenRouter account in one click with [OpenRouter SSO (OAuth PKCE)](https://openrouter.ai/docs/guides/overview/auth/oauth).
   - **Paid OpenRouter models**: users who have credits on OpenRouter can pick any of its models.
   - **BYOK**: users can add keys for **OpenAI**, **Anthropic**, and **Ollama** (Ollama Cloud, or their own server over HTTPS).
-  - **Fallback**: if the chosen model fails, lich fails over to the free router automatically.
+  - **Fallback**: if the chosen model fails, lich fails over to the free router automatically. If that fails too (most often
+    OpenRouter's free-model limit, a 429), it answers on the app's own account, up to `FALLBACK_DAILY_MESSAGES` (default 20)
+    messages per user per day (`0` turns it off):
+    - **Ollama Cloud** when the `FALLBACK_OLLAMA_KEY` secret is set, with `FALLBACK_OLLAMA_MODEL` (default `beam`);
+    - otherwise **Workers AI** (`FALLBACK_MODEL`, default `@cf/zai-org/glm-4.7-flash`) through the `AI` binding.
 - **Decision model (optional)**: Cloudflare's [Clef / Clef Flash](https://ollama.com/library/clef) on Ollama, a small judge model that answers typed questions (yes/no, choice, score) through `/v1/systemone`. It runs on the user's own Ollama key (Settings → Decision model), or on the app's shared one: Workers AI through the `AI` binding (`DECISION_BACKEND=workers-ai`; Clef Flash is $0.09 per million input tokens, no output charge) or `DECISION_OLLAMA_KEY`. When it's on:
   - **Smart ranking**: re-ranks a page of search results, scoring each paper's relevance on its own.
   - **Question routing**: points the tutor at the right tools (paper text, related work, your notes, or none) when the judge is confident.
@@ -73,7 +85,7 @@ How Pro limits cost:
 ```sh
 npm install
 npm run setup:local   # applies D1 migrations locally and writes .dev.vars with a fresh ENCRYPTION_KEY
-npm run dev           # http://localhost:5173
+npm run dev           # http://localhost:5173 (REMOTE_BINDINGS=1 also connects the Workers AI binding; needs `wrangler login`)
 ```
 
 In `.dev.vars`:

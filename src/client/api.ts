@@ -96,6 +96,22 @@ export interface KnowledgeEntry {
   paper_title?: string | null;
 }
 
+export interface PageSummary {
+  id: string;
+  parent_id: string | null;
+  title: string;
+  icon: string | null;
+  position: number;
+  updated_at: number;
+}
+
+export interface Page extends PageSummary {
+  /** TipTap JSON as a string, or HTML for an imported page that hasn't been edited yet. */
+  content: string | null;
+  format: "json" | "html";
+  created_at: number;
+}
+
 export interface ModelInfo {
   id: string;
   name: string;
