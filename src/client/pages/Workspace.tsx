@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type Page, type PageSummary } from "../api";
 import { PageEditor } from "../editor/Editor";
+import { Kernel } from "../notebook/kernel";
 import { Link } from "../components/Link";
 import { navigate } from "../router";
 import { RequireAuth } from "./RequireAuth";
@@ -217,6 +218,9 @@ function PageView({ id, onMeta }: { id: string; onMeta: (m: Partial<PageSummary>
   const [error, setError] = useState<string | null>(null);
   const [state, setState] = useState<SaveState>("saved");
   const pending = useRef<Record<string, unknown>>({});
+  // One runtime per open page: its code cells share variables. Started on the first run.
+  const [kernel] = useState(() => new Kernel());
+  useEffect(() => () => kernel.dispose(), [kernel]);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -327,7 +331,7 @@ function PageView({ id, onMeta }: { id: string; onMeta: (m: Partial<PageSummary>
           }
         }}
       />
-      <PageEditor initial={initial} autofocus={!!page.title && !page.content} onChange={(content, text) => queue({ content, text })} />
+      <PageEditor initial={initial} kernel={kernel} autofocus={!!page.title && !page.content} onChange={(content, text) => queue({ content, text })} />
     </article>
   );
 }

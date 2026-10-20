@@ -6,6 +6,12 @@ full text and for remembering what you've learned across sessions.
 
 - **Pages**: your own workspace of nested pages with a block editor (headings, lists, to-dos, quotes, code, math), a `/`
   command menu and Markdown shortcuts, saved as you type. Signed-in users land here; saved notes can be imported as pages.
+- **Code cells (notebooks)**: `/Python cell`, `/JavaScript cell` or `/TypeScript cell` add runnable cells to any page.
+  Shift+Enter runs a cell; cells on a page share variables per language; outputs (text, results, errors, matplotlib
+  plots) are saved with the page. Code runs in the browser, inside an opaque-origin sandboxed iframe
+  (`src/sandbox/sandbox.html`) in Web Workers, so it can't reach the app's cookies, API or DOM, and Stop kills a
+  runaway cell. Python is Pyodide (installed from npm, its core served at `/pyodide/`; numpy, pandas, matplotlib and
+  other packages load from Pyodide's CDN on first import); TypeScript is transpiled with Sucrase.
 - **Search all of arXiv**: free text, field queries (`au:hinton`, `ti:"diffusion"`), category filters, or paste an arXiv id/URL.
 - **Read**: full text in the app for openly licensed papers (CC BY, CC BY-SA, CC0), with attribution; otherwise the abstract with links to arXiv. PDFs open on arXiv.
 - **Chat with the paper**: the tutor grounds its answers in the paper. It searches and reads sections as needed and shows each step it took.

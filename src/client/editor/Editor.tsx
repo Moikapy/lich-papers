@@ -6,6 +6,8 @@ import { Placeholder } from "@tiptap/extensions";
 import { TaskItem, TaskList } from "@tiptap/extension-list";
 import { Mathematics } from "@tiptap/extension-mathematics";
 import Suggestion, { type SuggestionProps } from "@tiptap/suggestion";
+import { CodeCell } from "../notebook/CodeCell";
+import type { Kernel } from "../notebook/kernel";
 import "katex/dist/katex.min.css";
 
 export interface SlashItem {
@@ -26,7 +28,10 @@ export const SLASH_ITEMS: SlashItem[] = [
   { title: "Numbered list", hint: "1.", keywords: "ol ordered number", run: (e, r) => e.chain().focus().deleteRange(r).toggleOrderedList().run() },
   { title: "To-do list", hint: "[ ]", keywords: "todo task checkbox", run: (e, r) => e.chain().focus().deleteRange(r).toggleTaskList().run() },
   { title: "Quote", hint: ">", keywords: "blockquote", run: (e, r) => e.chain().focus().deleteRange(r).toggleBlockquote().run() },
-  { title: "Code block", hint: "```", keywords: "code pre", run: (e, r) => e.chain().focus().deleteRange(r).toggleCodeBlock().run() },
+  { title: "Python cell", hint: "run", keywords: "code notebook jupyter py run cell", run: (e, r) => e.chain().focus().deleteRange(r).insertCodeCell({ language: "python" }).run() },
+  { title: "JavaScript cell", hint: "run", keywords: "code notebook js run cell", run: (e, r) => e.chain().focus().deleteRange(r).insertCodeCell({ language: "javascript" }).run() },
+  { title: "TypeScript cell", hint: "run", keywords: "code notebook ts run cell", run: (e, r) => e.chain().focus().deleteRange(r).insertCodeCell({ language: "typescript" }).run() },
+  { title: "Code block", hint: "```", keywords: "code pre snippet", run: (e, r) => e.chain().focus().deleteRange(r).toggleCodeBlock().run() },
   { title: "Divider", hint: "---", keywords: "hr rule separator", run: (e, r) => e.chain().focus().deleteRange(r).setHorizontalRule().run() },
   {
     title: "Math block",
@@ -102,9 +107,13 @@ export interface EditorProps {
   initial: unknown;
   onChange: (doc: unknown, text: string) => void;
   autofocus?: boolean;
+  /** Runs this page's code cells. */
+  kernel?: Kernel | null;
 }
 
-export function PageEditor({ initial, onChange, autofocus }: EditorProps) {
+export function PageEditor({ initial, onChange, autofocus, kernel }: EditorProps) {
+  const kernelRef = useRef<Kernel | null>(null);
+  kernelRef.current = kernel ?? null;
   const [menu, setMenuState] = useState<MenuState>(null);
   const menuRef = useRef<MenuState>(null);
   const [menuStore] = useState(() => ({
@@ -139,6 +148,7 @@ export function PageEditor({ initial, onChange, autofocus }: EditorProps) {
         },
       }),
       slashCommand(menuStore),
+      CodeCell.configure({ getKernel: () => kernelRef.current }),
     ],
     content: (initial as never) ?? "",
     autofocus: autofocus ? "end" : false,

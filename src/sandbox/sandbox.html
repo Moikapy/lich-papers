@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!--
+      Code-cell runtime. The app embeds this page in <iframe sandbox="allow-scripts">, which gives it an opaque
+      origin: code here can't read the app's cookies or storage, call its API as the user, or touch its DOM.
+      It talks to the app only through postMessage. Code runs in Web Workers, so a runaway cell can be stopped
+      by terminating its worker.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: https: http://localhost:*; worker-src blob:; connect-src https: http://localhost:*; img-src data: blob: https:"
+    />
+    <title>Lich sandbox</title>
+  </head>
+  <body>
+    <script>
+      "use strict";
+      // Pyodide's core comes from the app (/pyodide/, copied from the npm package at build time, with CORS so this
+      // opaque-origin page can fetch it). Packages (numpy, pandas, matplotlib, …) aren't on npm: they load from
+      // Pyodide's CDN for the same pinned version on first import.
+      const PYODIDE_URL = new URL("/pyodide/", location.href).href;
+      const PYODIDE_PACKAGES = "https://cdn.jsdelivr.net/pyodide/v__PYODIDE_VERSION__/full/";
+
+      /** Worker for JavaScript (TypeScript arrives already transpiled). One shared global scope, like a kernel. */
+      const JS_WORKER = String.raw`
+        const send = (m) => postMessage(m);
+        const show = (v) => {
+          if (typeof v === "string") return v;
+          if (v === undefined) return "undefined";
+          if (typeof v === "function") return v.toString().split("\n")[0] + (v.toString().includes("\n") ? " …" : "");
+          if (typeof v === "bigint") return v + "n";
+          if (v instanceof Error) return v.stack || String(v);
+          try {
+            const seen = new WeakSet();
+            const s = JSON.stringify(v, (k, x) => (typeof x === "bigint" ? x + "n" : x && typeof x === "object" ? (seen.has(x) ? "[Circular]" : (seen.add(x), x instanceof Map ? Object.fromEntries(x) : x instanceof Set ? [...x] : x)) : x), 2);
+            return s === undefined ? String(v) : s;
+          } catch {
+            return String(v);
+          }
+        };
+        // Top-level declarations become globals so later cells can use them.
+        const hoist = (code) =>
+          code
+            .replace(/^(\s*)(?:const|let)\s+(?=[A-Za-z_$])/gm, "$1var ")
+            .replace(/^(\s*)class\s+([A-Za-z_$][\w$]*)/gm, "$1var $2 = class $2");
+        const KEYWORD = /^(const|let|var|function|class|if|for|while|do|return|import|export|try|switch|throw|\}|\/\/|\/\*)/;
+        let current = null;
+        for (const [name, level] of [["log", "stdout"], ["info", "stdout"], ["debug", "stdout"], ["warn", "stderr"], ["error", "stderr"]]) {
+          console[name] = (...args) => current !== null && send({ id: current, type: "stream", name: level, text: args.map(show).join(" ") + "\n" });
+        }
+        self.display = (v) => current !== null && send({ id: current, type: "result", text: show(v) });
+        self.onmessage = async (e) => {
+          const { id, code } = e.data;
+          current = id;
+          try {
+            let value;
+            if (/\bawait\b/.test(code)) {
+              // Top-level await: run as an async function, with declarations assigned to globals.
+              const lines = code.replace(/^(\s*)(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=/gm, "$1globalThis.$2 =").split("\n");
+              let i = lines.length - 1;
+              while (i >= 0 && !lines[i].trim()) i--;
+              if (i >= 0 && !KEYWORD.test(lines[i].trim()) && !/[{,(]$/.test(lines[i].trim())) lines[i] = "return (" + lines[i].replace(/;\s*$/, "") + ")";
+              value = await (0, eval)("(async () => {\n" + lines.join("\n") + "\n})()");
+            } else {
+              value = (0, eval)(hoist(code));
+              if (value instanceof Promise) value = await value;
+            }
+            if (value !== undefined) send({ id, type: "result", text: show(value) });
+          } catch (err) {
+            // Keep only the user's frames: drop the runtime's own (the worker's blob: script, eval wrappers).
+            const stack = String((err && err.stack) || "")
+              .split("\n")
+              .filter((l) => !/blob:|^\s*at eval \(<anonymous>\)$|self\.onmessage/.test(l))
+              .join("\n");
+            send({ id, type: "error", ename: (err && err.name) || "Error", evalue: (err && err.message) || String(err), traceback: stack });
+          } finally {
+            current = null;
+            send({ id, type: "done" });
+          }
+        };
+      `;
+
+      /** Worker for Python on Pyodide. */
+      const PY_WORKER = String.raw`
+        const send = (m) => postMessage(m);
+        let current = null;
+        const ready = (async () => {
+          importScripts(INDEX_URL + "pyodide.js");
+          const py = await loadPyodide({ indexURL: INDEX_URL, packageBaseUrl: PACKAGES_URL });
+          py.setStdout({ batched: (s) => current !== null && send({ id: current, type: "stream", name: "stdout", text: s + "\n" }) });
+          py.setStderr({ batched: (s) => current !== null && send({ id: current, type: "stream", name: "stderr", text: s + "\n" }) });
+          py.runPython("import os\nos.environ['MPLBACKEND'] = 'AGG'");
+          return py;
+        })();
+        // Figures drawn in a cell come back as PNGs, then are closed.
+        const FIGURES = "import sys\n" +
+          "def __lich_figures():\n" +
+          "    if 'matplotlib.pyplot' not in sys.modules: return []\n" +
+          "    import io, base64, matplotlib.pyplot as plt\n" +
+          "    out = []\n" +
+          "    for n in plt.get_fignums():\n" +
+          "        buf = io.BytesIO(); plt.figure(n).savefig(buf, format='png', bbox_inches='tight', dpi=96)\n" +
+          "        out.append(base64.b64encode(buf.getvalue()).decode())\n" +
+          "    plt.close('all')\n" +
+          "    return out\n" +
+          "__lich_figures()";
+        self.onmessage = async (e) => {
+          const { id, code } = e.data;
+          current = id;
+          try {
+            send({ id, type: "status", text: "Starting Python…" });
+            const py = await ready;
+            await py.loadPackagesFromImports(code, { messageCallback: (m) => send({ id, type: "status", text: m }), errorCallback: (m) => send({ id, type: "stream", name: "stderr", text: m + "\n" }) });
+            send({ id, type: "status", text: "" });
+            const value = await py.runPythonAsync(code);
+            if (value !== undefined && value !== null) {
+              let text;
+              if (value && typeof value === "object" && typeof value.toString === "function" && "type" in value) {
+                text = py.pyimport("builtins").repr(value);
+                if (typeof value.destroy === "function") value.destroy();
+              } else {
+                text = typeof value === "string" ? "'" + value + "'" : String(value);
+              }
+              send({ id, type: "result", text });
+            }
+            const figs = py.runPython(FIGURES);
+            for (const png of figs.toJs()) send({ id, type: "image", mime: "image/png", data: png });
+            figs.destroy();
+          } catch (err) {
+            const msg = String((err && err.message) || err);
+            const last = msg.trim().split("\n").pop() || "";
+            const m = last.match(/^([A-Za-z_][\w.]*):\s?([\s\S]*)$/);
+            // Drop Pyodide's own frames (and the code lines under them) from the traceback.
+            const lines = msg.split("\n");
+            const kept = [];
+            let skipping = false;
+            for (const l of lines) {
+              if (/^\s*File "/.test(l)) skipping = /\/_pyodide\//.test(l);
+              else if (!/^\s/.test(l)) skipping = false;
+              if (!skipping) kept.push(l);
+            }
+            send({ id, type: "error", ename: m ? m[1] : "Error", evalue: m ? m[2] : last, traceback: kept.join("\n") });
+          } finally {
+            current = null;
+            send({ id, type: "done" });
+          }
+        };
+      `;
+
+      const workers = {};
+      const owner = {}; // run id -> language, so a restart can finish its pending runs
+
+      function startWorker(lang) {
+        const source =
+          lang === "python" ? "const INDEX_URL = " + JSON.stringify(PYODIDE_URL) + ", PACKAGES_URL = " + JSON.stringify(PYODIDE_PACKAGES) + ";\n" + PY_WORKER : JS_WORKER;
+        const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+        const w = new Worker(url);
+        w.onmessage = (e) => {
+          if (e.data && e.data.type === "done") delete owner[e.data.id];
+          parent.postMessage(e.data, "*");
+        };
+        w.onerror = (e) => {
+          // A worker that fails to start (e.g. the Python CDN is unreachable) fails its pending runs.
+          for (const [id, l] of Object.entries(owner)) {
+            if (l !== lang) continue;
+            parent.postMessage({ id, type: "error", ename: "RuntimeError", evalue: e.message || "The runtime failed to start", traceback: "" }, "*");
+            parent.postMessage({ id, type: "done" }, "*");
+            delete owner[id];
+          }
+          e.preventDefault();
+        };
+        workers[lang] = w;
+        return w;
+      }
+
+      function stop(lang) {
+        const w = workers[lang];
+        if (!w) return;
+        w.terminate();
+        delete workers[lang];
+        for (const [id, l] of Object.entries(owner)) {
+          if (l !== lang) continue;
+          parent.postMessage({ id, type: "error", ename: "Interrupted", evalue: "Stopped. Variables from earlier cells were cleared.", traceback: "" }, "*");
+          parent.postMessage({ id, type: "done" }, "*");
+          delete owner[id];
+        }
+      }
+
+      window.addEventListener("message", (e) => {
+        if (e.source !== parent) return;
+        const m = e.data || {};
+        if (m.type === "run" && (m.lang === "javascript" || m.lang === "python")) {
+          owner[m.id] = m.lang;
+          (workers[m.lang] || startWorker(m.lang)).postMessage({ id: m.id, code: String(m.code || "") });
+        } else if (m.type === "restart") {
+          for (const lang of m.lang ? [m.lang] : Object.keys(workers)) stop(lang);
+        }
+      });
+      parent.postMessage({ type: "ready" }, "*");
+    </script>
+  </body>
+</html>
