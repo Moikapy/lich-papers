@@ -33,6 +33,22 @@
     // Shared decision model for every signed-in user: Clef (27B) on Workers AI, billed to this account.
     "DECISION_BACKEND": "workers-ai",
     "DECISION_MODEL": "clef"
+  },
+  // Settings for Preview deployments (`wrangler preview`, the deploy command Workers Builds runs for non-main branches).
+  // Previews share the production D1 database (see README).
+  "previews": {
+    "vars": {
+      "APP_NAME": "Lich Papers (preview)",
+      "DEFAULT_MODEL": "openrouter/free",
+      "PRO_PRICE_CENTS": "1000",
+      "PRO_MONTHLY_CAP_USD": "4",
+      "PRO_DEFAULT_MODEL": "google/gemini-3.5-flash",
+      "FREE_TRIAL_MESSAGES": "10",
+      "DECISION_BACKEND": "workers-ai",
+      // The cheaper Clef for previews.
+      "DECISION_MODEL": "clef-flash"
+    },
+    "ai": { "binding": "AI" }
   }
   // Secrets (set with `wrangler secret put`):
   //   ENCRYPTION_KEY       – required; base64 32-byte key used to encrypt stored API keys
