@@ -21,8 +21,19 @@
   ],
   // Workers AI, for the optional shared decision model (Clef). Only used when DECISION_BACKEND is "workers-ai".
   "ai": { "binding": "AI" },
-  // Plain variables are set in the Cloudflare dashboard, not here; keep_vars stops deploys from deleting them.
-  "keep_vars": true
+  "vars": {
+    "APP_NAME": "Lich Papers",
+    "DEFAULT_MODEL": "openrouter/free",
+    // Pro plan: $10/month, with each subscriber's model spend capped at $4/month on their own OpenRouter key.
+    "PRO_PRICE_CENTS": "1000",
+    "PRO_MONTHLY_CAP_USD": "4",
+    "PRO_DEFAULT_MODEL": "google/gemini-3.5-flash",
+    // One-time trial on the shared OPENROUTER_API_KEY, in messages.
+    "FREE_TRIAL_MESSAGES": "10",
+    // Shared decision model for every signed-in user: Clef (27B) on Workers AI, billed to this account.
+    "DECISION_BACKEND": "workers-ai",
+    "DECISION_MODEL": "clef"
+  }
   // Secrets (set with `wrangler secret put`):
   //   ENCRYPTION_KEY       – required; base64 32-byte key used to encrypt stored API keys
   //   OPENROUTER_API_KEY   – optional; server key for a one-time free trial on the free router
