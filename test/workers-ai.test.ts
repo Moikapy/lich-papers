@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ProviderConfig } from "@moikapy/lich";
 import { runChat, type UsageCounter } from "../src/worker/agent";
-import { fallbackProvider, toChatCompletion, workersAiFetch, WORKERS_AI_PROVIDER } from "../src/worker/workers-ai";
+import { fallbackProvider, monthKey, toChatCompletion, workersAiFetch, WORKERS_AI_PROVIDER } from "../src/worker/workers-ai";
 
 /** Fake AI binding that records inputs and replays outputs. */
 function fakeAi(outputs: unknown[]) {
@@ -67,13 +67,22 @@ describe("workersAiFetch", () => {
 });
 
 describe("fallbackProvider", () => {
-  it("is offered until the user's daily cap is used", async () => {
+  const free = { id: "u", plan: "free" as const };
+  const pro = { id: "u", plan: "pro" as const };
+  it("is offered until the plan's monthly cap is used", async () => {
     const env = (used: number, extra: Record<string, unknown> = {}) => ({ AI: fakeAi([]).ai, ...fakeDb(used), ...extra }) as any;
-    expect(await fallbackProvider(env(0), "u")).toMatchObject({ name: WORKERS_AI_PROVIDER, model: "@cf/zai-org/glm-4.7-flash" });
-    expect(await fallbackProvider(env(19), "u")).not.toBeNull();
-    expect(await fallbackProvider(env(20), "u")).toBeNull();
-    expect(await fallbackProvider(env(0, { FALLBACK_DAILY_MESSAGES: "0" }), "u")).toBeNull();
-    expect(await fallbackProvider({ ...fakeDb(0) } as any, "u")).toBeNull();
+    expect(await fallbackProvider(env(0), free)).toMatchObject({ name: WORKERS_AI_PROVIDER, model: "@cf/zai-org/glm-4.7-flash" });
+    expect(await fallbackProvider(env(19), free)).not.toBeNull();
+    expect(await fallbackProvider(env(20), free)).toBeNull();
+    expect(await fallbackProvider(env(20), pro)).not.toBeNull();
+    expect(await fallbackProvider(env(300), pro)).toBeNull();
+    expect(await fallbackProvider(env(0, { FALLBACK_MONTHLY_MESSAGES: "0" }), free)).toBeNull();
+    expect(await fallbackProvider(env(5, { FALLBACK_MONTHLY_MESSAGES: "5", FALLBACK_PRO_MONTHLY_MESSAGES: "1000" }), pro)).not.toBeNull();
+    expect(await fallbackProvider({ ...fakeDb(0) } as any, free)).toBeNull();
+  });
+  it("counts per UTC month", () => {
+    expect(monthKey(Date.UTC(2026, 9, 31, 23, 59))).toBe("fallback:2026-10");
+    expect(monthKey(Date.UTC(2026, 10, 1, 0, 0))).toBe("fallback:2026-11");
   });
 });
 
@@ -88,7 +97,7 @@ describe("runChat failover", () => {
       fetch_fn: async () => Response.json({ error: { message: "Rate limit exceeded: free-models-per-day" } }, { status: 429 }),
     };
     const f = fakeAi([{ choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "From the fallback." } }], usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 } }]);
-    const fallback = (await fallbackProvider({ AI: f.ai, ...fakeDb(0) } as any, "u"))!;
+    const fallback = (await fallbackProvider({ AI: f.ai, ...fakeDb(0) } as any, { id: "u", plan: "free" }))!;
     const counter: UsageCounter = { sharedCalls: 0 };
     const r = await runChat({ providers: [limited, fallback], system: "s", tools: [], history: [], input: "q", counter });
     expect(r.content).toBe("From the fallback.");
@@ -100,7 +109,7 @@ describe("runChat failover", () => {
 describe("Ollama Cloud fallback", () => {
   it("is used instead of Workers AI when FALLBACK_OLLAMA_KEY is set", async () => {
     const base = { AI: fakeAi([]).ai, ...fakeDb(0) };
-    expect(await fallbackProvider({ ...base, FALLBACK_OLLAMA_KEY: "ok" } as any, "u")).toEqual({
+    expect(await fallbackProvider({ ...base, FALLBACK_OLLAMA_KEY: "ok" } as any, { id: "u", plan: "free" })).toEqual({
       kind: "ollama",
       name: "ollama-fallback",
       model: "beam",
@@ -108,9 +117,9 @@ describe("Ollama Cloud fallback", () => {
       api_key: "ok",
       timeout_ms: 90_000,
     });
-    expect(await fallbackProvider({ ...base, FALLBACK_OLLAMA_KEY: "ok", FALLBACK_OLLAMA_MODEL: "beam:cloud" } as any, "u")).toMatchObject({ model: "beam" });
-    expect(await fallbackProvider({ ...fakeDb(0), FALLBACK_OLLAMA_KEY: "ok" } as any, "u")).toMatchObject({ name: "ollama-fallback" });
-    expect(await fallbackProvider({ ...fakeDb(20), FALLBACK_OLLAMA_KEY: "ok" } as any, "u")).toBeNull();
+    expect(await fallbackProvider({ ...base, FALLBACK_OLLAMA_KEY: "ok", FALLBACK_OLLAMA_MODEL: "beam:cloud" } as any, { id: "u", plan: "free" })).toMatchObject({ model: "beam" });
+    expect(await fallbackProvider({ ...fakeDb(0), FALLBACK_OLLAMA_KEY: "ok" } as any, { id: "u", plan: "free" })).toMatchObject({ name: "ollama-fallback" });
+    expect(await fallbackProvider({ ...fakeDb(20), FALLBACK_OLLAMA_KEY: "ok" } as any, { id: "u", plan: "free" })).toBeNull();
   });
 
   it("answers through lich's Ollama provider when OpenRouter returns 429", async () => {
@@ -123,7 +132,7 @@ describe("Ollama Cloud fallback", () => {
       fetch_fn: async () => Response.json({ error: { message: "Rate limit exceeded" } }, { status: 429 }),
     };
     const seen: { url: string; auth: string | null; body: any }[] = [];
-    const fallback = { ...(await fallbackProvider({ ...fakeDb(0), FALLBACK_OLLAMA_KEY: "ok" } as any, "u"))!, fetch_fn: (async (url: string, init: RequestInit) => {
+    const fallback = { ...(await fallbackProvider({ ...fakeDb(0), FALLBACK_OLLAMA_KEY: "ok" } as any, { id: "u", plan: "free" }))!, fetch_fn: (async (url: string, init: RequestInit) => {
       seen.push({ url: String(url), auth: new Headers(init.headers).get("authorization"), body: JSON.parse(String(init.body)) });
       return Response.json({ model: "beam", message: { role: "assistant", content: "From beam." }, done: true, done_reason: "stop", prompt_eval_count: 5, eval_count: 3 });
     }) as typeof fetch };
