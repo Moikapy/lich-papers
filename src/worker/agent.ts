@@ -5,7 +5,7 @@ import type { Ctx, Env, User } from "./env";
 import { addKnowledge, assertCanAddNote, formatKnowledge, NoteLimitError, searchKnowledge, type KnowledgeRow } from "./knowledge";
 import { chunkText, outline, readRange, readSection, searchChunks } from "./paper-text";
 import { SHARED_PROVIDER } from "./providers";
-import { WORKERS_AI_PROVIDER } from "./workers-ai";
+import { FALLBACK_PROVIDERS } from "./workers-ai";
 
 const EXCERPT_CHARS = 8000;
 
@@ -352,7 +352,7 @@ export async function runChat(opts: {
         opts.onEvent?.({ type: "status", text: e.turn === 1 ? "Thinking…" : "Reading results…" });
         break;
       case "llm_end":
-        if (e.result.provider_name === WORKERS_AI_PROVIDER && opts.counter) opts.counter.fallbackCalls = (opts.counter.fallbackCalls ?? 0) + 1;
+        if (FALLBACK_PROVIDERS.has(e.result.provider_name) && opts.counter) opts.counter.fallbackCalls = (opts.counter.fallbackCalls ?? 0) + 1;
         if (e.result.provider_name === SHARED_PROVIDER) {
           sharedCalls++;
           if (opts.counter) opts.counter.sharedCalls = sharedCalls;

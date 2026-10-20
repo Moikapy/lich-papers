@@ -220,9 +220,9 @@ function Privacy({ app, operator, contact }: Ctx) {
           improve their models. Don't send anything sensitive through free models.
         </li>
         <li>
-          <strong>Cloudflare Workers AI</strong> answers when the other providers fail (for example, when free models hit their daily limit),
-          up to a daily limit per account. It also runs the small decision model that ranks search results, tags notes, and checks answers
-          against the paper.
+          <strong>Our fallback</strong> (our Ollama Cloud account, or Cloudflare Workers AI) answers when the other providers fail, for
+          example when free models hit their daily limit, up to a daily limit per account. Cloudflare Workers AI also runs the small decision
+          model that ranks search results, tags notes, and checks answers against the paper.
         </li>
       </ul>
       <p>We don't use your conversations to train models, and we don't share them with anyone else except as described here.</p>
@@ -233,6 +233,7 @@ function Privacy({ app, operator, contact }: Ctx) {
         <li>Cloudflare: hosting, database, logs, and Workers AI (fallback answers and the decision model).</li>
         <li>Stripe: subscription payments.</li>
         <li>OpenRouter, and the model providers it routes to, or your chosen provider: AI answers.</li>
+        <li>Ollama: fallback AI answers.</li>
         <li>arXiv: we fetch papers, licenses, and metadata from it; it learns which papers are requested, not who requested them.</li>
       </ul>
       <p>We may also disclose data if the law requires it, or to protect the service and its users from harm.</p>

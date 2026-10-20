@@ -14,9 +14,10 @@ full text and for remembering what you've learned across sessions.
   - **Paid OpenRouter models**: users who have credits on OpenRouter can pick any of its models.
   - **BYOK**: users can add keys for **OpenAI**, **Anthropic**, and **Ollama** (Ollama Cloud, or their own server over HTTPS).
   - **Fallback**: if the chosen model fails, lich fails over to the free router automatically. If that fails too (most often
-    OpenRouter's free-model limit, a 429), it answers on Workers AI (`@cf/zai-org/glm-4.7-flash` through the `AI` binding, billed
-    to your Cloudflare account), up to `FALLBACK_DAILY_MESSAGES` (default 20) messages per user per day. `FALLBACK_MODEL` picks
-    another model, and `FALLBACK_DAILY_MESSAGES=0` turns it off.
+    OpenRouter's free-model limit, a 429), it answers on the app's own account, up to `FALLBACK_DAILY_MESSAGES` (default 20)
+    messages per user per day (`0` turns it off):
+    - **Ollama Cloud** when the `FALLBACK_OLLAMA_KEY` secret is set, with `FALLBACK_OLLAMA_MODEL` (default `beam`);
+    - otherwise **Workers AI** (`FALLBACK_MODEL`, default `@cf/zai-org/glm-4.7-flash`) through the `AI` binding.
 - **Decision model (optional)**: Cloudflare's [Clef / Clef Flash](https://ollama.com/library/clef) on Ollama, a small judge model that answers typed questions (yes/no, choice, score) through `/v1/systemone`. It runs on the user's own Ollama key (Settings → Decision model), or on the app's shared one: Workers AI through the `AI` binding (`DECISION_BACKEND=workers-ai`; Clef Flash is $0.09 per million input tokens, no output charge) or `DECISION_OLLAMA_KEY`. When it's on:
   - **Smart ranking**: re-ranks a page of search results, scoring each paper's relevance on its own.
   - **Question routing**: points the tutor at the right tools (paper text, related work, your notes, or none) when the judge is confident.

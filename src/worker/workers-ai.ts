@@ -1,13 +1,19 @@
 import type { ProviderConfig } from "@moikapy/lich";
 import type { Env } from "./env";
+// Circular with providers.ts, which is fine: these are only used inside functions.
+import { OLLAMA_CLOUD_BASE, ollamaModelName } from "./providers";
 
 /**
- * Last-resort chat fallback on Workers AI, through the AI binding. It answers when every other
- * provider in the chain fails (most often OpenRouter's free-model limit, a 429), is billed to the
- * app's Cloudflare account, and is capped per user per day.
+ * Last-resort chat fallback, paid for by the app. It answers when every other provider in the chain
+ * fails (most often OpenRouter's free-model limit, a 429) and is capped per user per day. It runs on
+ * the app's Ollama Cloud account when FALLBACK_OLLAMA_KEY is set (model FALLBACK_OLLAMA_MODEL,
+ * default "beam"), otherwise on Workers AI through the AI binding.
  */
 
 export const WORKERS_AI_PROVIDER = "workers-ai-fallback";
+export const OLLAMA_FALLBACK_PROVIDER = "ollama-fallback";
+export const FALLBACK_PROVIDERS: ReadonlySet<string> = new Set([WORKERS_AI_PROVIDER, OLLAMA_FALLBACK_PROVIDER]);
+export const DEFAULT_OLLAMA_FALLBACK_MODEL = "beam";
 /** Tool-calling model with an OpenAI-style chat schema ($0.06 / $0.40 per M input / output tokens). */
 export const DEFAULT_FALLBACK_MODEL = "@cf/zai-org/glm-4.7-flash";
 /** Fallback answers per user per UTC day. */
@@ -38,13 +44,24 @@ export async function recordFallbackUse(env: Env, userId: string): Promise<void>
 }
 
 /**
- * The fallback provider for a user, or null when the AI binding is missing, the fallback is turned
- * off (FALLBACK_DAILY_MESSAGES=0) or the user has used today's fallback messages.
+ * The fallback provider for a user, or null when none is configured, the fallback is turned off
+ * (FALLBACK_DAILY_MESSAGES=0) or the user has used today's fallback messages.
  */
 export async function fallbackProvider(env: Env, userId: string): Promise<ProviderConfig | null> {
   const limit = fallbackDailyLimit(env);
-  if (!env.AI || limit <= 0) return null;
+  const ollamaKey = env.FALLBACK_OLLAMA_KEY?.trim();
+  if ((!ollamaKey && !env.AI) || limit <= 0) return null;
   if ((await fallbackUsedToday(env, userId)) >= limit) return null;
+  if (ollamaKey) {
+    return {
+      kind: "ollama",
+      name: OLLAMA_FALLBACK_PROVIDER,
+      model: ollamaModelName(env.FALLBACK_OLLAMA_MODEL?.trim() || DEFAULT_OLLAMA_FALLBACK_MODEL, OLLAMA_CLOUD_BASE),
+      base_url: OLLAMA_CLOUD_BASE,
+      api_key: ollamaKey,
+      timeout_ms: 90_000,
+    };
+  }
   const model = fallbackModel(env);
   return {
     kind: "openai_compat",
@@ -52,7 +69,7 @@ export async function fallbackProvider(env: Env, userId: string): Promise<Provid
     model,
     // Not a real endpoint: workersAiFetch answers every request through the binding.
     base_url: "https://workers-ai.binding/v1",
-    fetch_fn: workersAiFetch(env.AI, model),
+    fetch_fn: workersAiFetch(env.AI!, model),
     timeout_ms: 90_000,
   };
 }

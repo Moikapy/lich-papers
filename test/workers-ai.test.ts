@@ -96,3 +96,42 @@ describe("runChat failover", () => {
     expect(counter.fallbackCalls).toBe(1);
   });
 });
+
+describe("Ollama Cloud fallback", () => {
+  it("is used instead of Workers AI when FALLBACK_OLLAMA_KEY is set", async () => {
+    const base = { AI: fakeAi([]).ai, ...fakeDb(0) };
+    expect(await fallbackProvider({ ...base, FALLBACK_OLLAMA_KEY: "ok" } as any, "u")).toEqual({
+      kind: "ollama",
+      name: "ollama-fallback",
+      model: "beam",
+      base_url: "https://ollama.com",
+      api_key: "ok",
+      timeout_ms: 90_000,
+    });
+    expect(await fallbackProvider({ ...base, FALLBACK_OLLAMA_KEY: "ok", FALLBACK_OLLAMA_MODEL: "beam:cloud" } as any, "u")).toMatchObject({ model: "beam" });
+    expect(await fallbackProvider({ ...fakeDb(0), FALLBACK_OLLAMA_KEY: "ok" } as any, "u")).toMatchObject({ name: "ollama-fallback" });
+    expect(await fallbackProvider({ ...fakeDb(20), FALLBACK_OLLAMA_KEY: "ok" } as any, "u")).toBeNull();
+  });
+
+  it("answers through lich's Ollama provider when OpenRouter returns 429", async () => {
+    const limited: ProviderConfig = {
+      kind: "openai_compat",
+      name: "openrouter-free",
+      model: "openrouter/free",
+      base_url: "https://fake.test/v1",
+      api_key: "k",
+      fetch_fn: async () => Response.json({ error: { message: "Rate limit exceeded" } }, { status: 429 }),
+    };
+    const seen: { url: string; auth: string | null; body: any }[] = [];
+    const fallback = { ...(await fallbackProvider({ ...fakeDb(0), FALLBACK_OLLAMA_KEY: "ok" } as any, "u"))!, fetch_fn: (async (url: string, init: RequestInit) => {
+      seen.push({ url: String(url), auth: new Headers(init.headers).get("authorization"), body: JSON.parse(String(init.body)) });
+      return Response.json({ model: "beam", message: { role: "assistant", content: "From beam." }, done: true, done_reason: "stop", prompt_eval_count: 5, eval_count: 3 });
+    }) as typeof fetch };
+    const counter: UsageCounter = { sharedCalls: 0 };
+    const r = await runChat({ providers: [limited, fallback], system: "s", tools: [], history: [], input: "q", counter });
+    expect(r.content).toBe("From beam.");
+    expect(r.provider).toBe("ollama-fallback");
+    expect(counter.fallbackCalls).toBe(1);
+    expect(seen[0]).toMatchObject({ url: "https://ollama.com/api/chat", auth: "Bearer ok", body: { model: "beam" } });
+  });
+});

@@ -49,6 +49,10 @@ export interface Env {
   DECISION_OLLAMA_BASE?: string;
   /** Decision model name (default "clef-flash"; "clef" or "clef-flash" on Workers AI). */
   DECISION_MODEL?: string;
+  /** Secret: the app's Ollama Cloud key. When set, the last-resort chat fallback runs there instead of Workers AI. */
+  FALLBACK_OLLAMA_KEY?: string;
+  /** Ollama Cloud model for that fallback (default "beam"). */
+  FALLBACK_OLLAMA_MODEL?: string;
   /** Workers AI model for the last-resort chat fallback (default "@cf/zai-org/glm-4.7-flash"). */
   FALLBACK_MODEL?: string;
   /** Fallback answers per user per day (default 20; "0" turns the fallback off). */
