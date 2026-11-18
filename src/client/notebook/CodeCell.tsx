@@ -30,6 +30,11 @@ const parseJson = <T,>(raw: string | null, fallback: T): T => {
   }
 };
 
+export const newCellId = () => `c${Math.random().toString(36).slice(2, 8)}`;
+/** Runs a cell and resolves with its final outputs. */
+export type CellRunner = () => Promise<CellOutput[]>;
+export const cellRunners = (editor: { storage: unknown }) => (editor.storage as { codeCell: { runners: Map<string, CellRunner> } }).codeCell.runners;
+
 /** A runnable code cell: source, language and its last outputs, all stored in the page. */
 export const CodeCell = Node.create<CodeCellOptions>({
   name: "codeCell",
@@ -40,6 +45,8 @@ export const CodeCell = Node.create<CodeCellOptions>({
   addOptions: () => ({ getKernel: () => null }),
   addAttributes() {
     return {
+      // Stable handle for the agent's tools (edit_cell, run_cell).
+      id: { default: null, parseHTML: (el) => el.getAttribute("data-id") },
       language: { default: "python", parseHTML: (el) => el.getAttribute("data-language") ?? "python" },
       source: { default: "", parseHTML: (el) => el.getAttribute("data-source") ?? "" },
       outputs: { default: [], parseHTML: (el) => parseJson(el.getAttribute("data-outputs"), []) },
@@ -52,6 +59,7 @@ export const CodeCell = Node.create<CodeCellOptions>({
       "div",
       mergeAttributes(HTMLAttributes, {
         "data-type": "code-cell",
+        "data-id": node.attrs.id,
         "data-language": node.attrs.language,
         "data-source": node.attrs.source,
         "data-outputs": JSON.stringify(node.attrs.outputs ?? []),
@@ -65,9 +73,11 @@ export const CodeCell = Node.create<CodeCellOptions>({
       insertCodeCell:
         (attrs = {}) =>
         ({ commands }) =>
-          commands.insertContent({ type: this.name, attrs: { language: attrs.language ?? "python", source: attrs.source ?? "" } }),
+          commands.insertContent({ type: this.name, attrs: { id: newCellId(), language: attrs.language ?? "python", source: attrs.source ?? "" } }),
     };
   },
+  // Each mounted cell registers how to run itself, so the agent can run cells by id.
+  addStorage: () => ({ runners: new Map<string, CellRunner>() }),
   addNodeView() {
     return ReactNodeViewRenderer(CodeCellView);
   },
@@ -96,7 +106,8 @@ export const CodeCell = Node.create<CodeCellOptions>({
 });
 
 function CodeCellView({ node, updateAttributes, deleteNode, extension, selected, editor, getPos }: NodeViewProps) {
-  const { language, source, outputs, executionCount } = node.attrs as { language: CellLanguage; source: string; outputs: CellOutput[]; executionCount: number | null };
+  const { id, language, source, outputs, executionCount } = node.attrs as { id: string | null; language: CellLanguage; source: string; outputs: CellOutput[]; executionCount: number | null };
+  const busy = useRef(false);
   const [running, setRunning] = useState(false);
   const [status, setStatus] = useState("");
   const textarea = useRef<HTMLTextAreaElement>(null);
@@ -135,8 +146,13 @@ function CodeCellView({ node, updateAttributes, deleteNode, extension, selected,
     view.focus();
   };
 
-  const run = async () => {
-    if (!kernel || running) return;
+  const run = async (): Promise<CellOutput[]> => {
+    if (!kernel || busy.current) return outputs;
+    // Read the cell as it is now: the agent may have just changed it.
+    const pos = typeof getPos === "function" ? getPos() : undefined;
+    const now = (pos !== undefined ? editor.state.doc.nodeAt(pos)?.attrs : null) ?? node.attrs;
+    const { language, source } = now as { language: CellLanguage; source: string };
+    busy.current = true;
     setRunning(true);
     setStatus("");
     let out: CellOutput[] = [];
@@ -160,12 +176,30 @@ function CodeCellView({ node, updateAttributes, deleteNode, extension, selected,
     updateAttributes({ outputs: out, executionCount: count });
     setStatus("");
     setRunning(false);
+    busy.current = false;
+    return out;
   };
+  const runRef = useRef(run);
+  runRef.current = run;
+
+  // Give the cell an id (older or pasted cells may lack one or share one) and register its runner.
+  useEffect(() => {
+    const runners = cellRunners(editor);
+    const mine: CellRunner = () => runRef.current();
+    if (!id || runners.has(id)) {
+      queueMicrotask(() => updateAttributes({ id: newCellId() }));
+      return;
+    }
+    runners.set(id, mine);
+    return () => {
+      if (runners.get(id) === mine) runners.delete(id);
+    };
+  }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <NodeViewWrapper className={`code-cell${selected ? " selected" : ""}`} data-language={language}>
       <div className="cell-bar" contentEditable={false}>
-        <button type="button" className="cell-run" onClick={running ? () => kernel?.restart(language) : run} title={running ? "Stop (clears variables)" : "Run (Shift+Enter)"} aria-label={running ? "Stop" : "Run cell"}>
+        <button type="button" className="cell-run" onClick={running ? () => kernel?.restart(language) : () => void run()} title={running ? "Stop (clears variables)" : "Run (Shift+Enter)"} aria-label={running ? "Stop" : "Run cell"}>
           {running ? "■" : "▶"}
         </button>
         <span className="cell-count muted small">[{running ? "*" : (executionCount ?? " ")}]</span>

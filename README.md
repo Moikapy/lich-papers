@@ -12,6 +12,10 @@ full text and for remembering what you've learned across sessions.
   (`src/sandbox/sandbox.html`) in Web Workers, so it can't reach the app's cookies, API or DOM, and Stop kills a
   runaway cell. Python is Pyodide (installed from npm, its core served at `/pyodide/`; numpy, pandas, matplotlib and
   other packages load from Pyodide's CDN on first import); TypeScript is transpiled with Sucrase.
+- **Lich in a page**: "Ask Lich" opens a chat beside any page. Lich can read the page, write on it, and add, edit, run and
+  fix code cells, reading their output as it goes; it can also search and read arXiv papers (`/arXiv paper` embeds one on
+  the page). The page and its cells live in the browser, so the chat runs over a WebSocket (`/api/pages/:id/agent`) and the
+  page tools are executed client-side (`src/client/notebook/page-tools.ts`), with results sent back to the agent.
 - **Search all of arXiv**: free text, field queries (`au:hinton`, `ti:"diffusion"`), category filters, or paste an arXiv id/URL.
 - **Read**: full text in the app for openly licensed papers (CC BY, CC BY-SA, CC0), with attribution; otherwise the abstract with links to arXiv. PDFs open on arXiv.
 - **Chat with the paper**: the tutor grounds its answers in the paper. It searches and reads sections as needed and shows each step it took.

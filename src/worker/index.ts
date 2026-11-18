@@ -14,6 +14,7 @@ import { decisionPlugin } from "./decision-plugin";
 import { recordFallbackUse } from "./workers-ai";
 import { createPage, deletePage, getPage, importNotes, listPages, updatePage } from "./pages";
 import { costReport, isAdmin } from "./costs";
+import { pageSystemPrompt, pageTools, researchTools, type ClientBridge } from "./page-agent";
 import { figureLoader, paperTools, runChat, type UsageCounter, safeProviderMessage, summarize, systemPrompt, type Budget } from "./agent";
 import { applyComp, loadProKey, proAllowance, revokeProKey, proCapUsd, stripe, syncSubscription, verifyStripeSignature, type StripeSubscription } from "./billing";
 import {
@@ -623,6 +624,121 @@ app.post("/pages", requireUser, async (c) => {
 
 /** Copies saved notes and session summaries into pages (once per note). */
 app.post("/pages/import-notes", requireUser, async (c) => c.json(await importNotes(c.env, currentUser(c).id)));
+
+/**
+ * Lich working inside a page, over a WebSocket: the browser sends the message, the agent's events stream back,
+ * and tools that touch the page or run code cells are executed by the browser (see page-agent.ts).
+ */
+app.get("/pages/:id/agent", requireUser, async (c) => {
+  if (c.req.header("upgrade")?.toLowerCase() !== "websocket") throw new HTTPException(426, { message: "Expected a WebSocket" });
+  // Browsers send cookies on cross-site WebSocket handshakes, so check the origin here.
+  if (c.req.header("origin") !== new URL(c.req.url).origin) throw new HTTPException(403, { message: "Bad origin" });
+  const user = currentUser(c);
+  const page = await getPage(c.env, user.id, c.req.param("id"));
+  const appUrl = new URL(c.req.url).origin;
+  const env = c.env;
+  const ctx = c.executionCtx;
+
+  const [client, server] = Object.values(new WebSocketPair()) as [WebSocket, WebSocket];
+  server.accept();
+  const send = (m: Record<string, unknown>) => {
+    try {
+      server.send(JSON.stringify(m));
+    } catch {}
+  };
+  const abort = new AbortController();
+  const waiting = new Map<string, (r: { ok: boolean; output: string; error?: string }) => void>();
+  const bridge: ClientBridge = (name, args) =>
+    new Promise((resolve) => {
+      const id = crypto.randomUUID();
+      // A cell can take a while (first Python start); give up after two minutes.
+      const timer = setTimeout(() => {
+        waiting.delete(id);
+        resolve({ ok: false, output: "", error: "The page didn't answer in time." });
+      }, 120_000);
+      waiting.set(id, (r) => {
+        clearTimeout(timer);
+        resolve({ ok: !!r.ok, output: String(r.output ?? "").slice(0, 30_000), ...(r.ok ? {} : { error: String(r.error ?? "failed").slice(0, 2000) }) });
+      });
+      send({ type: "client_tool", id, name, args });
+    });
+
+  let started = false;
+  const run = async (m: { content?: unknown; history?: unknown; provider?: unknown; model?: unknown; page?: unknown }) => {
+    try {
+      const input = String(m.content ?? "").trim();
+      if (!input) throw new HTTPException(400, { message: "Message is empty" });
+      if (input.length > 20_000) throw new HTTPException(400, { message: "Message is too long" });
+      const history: Message[] = (Array.isArray(m.history) ? m.history : [])
+        .filter((h): h is { role: "user" | "assistant"; content: string } => !!h && (h.role === "user" || h.role === "assistant") && typeof h.content === "string")
+        .slice(-12)
+        .map((h) => ({ role: h.role, content: h.content.slice(0, 8000) }));
+      const chain = await resolveChain(env, user, appUrl, {
+        provider: isChatProvider(m.provider) ? m.provider : undefined,
+        model: m.model ? String(m.model) : undefined,
+      });
+      const primary = chain.providers[0]!.name;
+      const lean = primary === PRO_PROVIDER || primary === SHARED_PROVIDER;
+      const result = await metered(env, user.id, chain.providers, (providers, counter) =>
+        runChat({
+          providers,
+          counter,
+          budget: lean ? "lean" : "full",
+          maxTurns: lean ? 8 : 14,
+          system: pageSystemPrompt(page.title, String(m.page ?? "").slice(0, 40_000)),
+          tools: [...pageTools(bridge), ...researchTools(env, user, ctx)],
+          history,
+          input,
+          signal: abort.signal,
+          onEvent: (e) => send(e),
+        }),
+      );
+      if (result.stopped === "aborted") return;
+      const meta = { provider: result.provider, model: result.model, tools: result.tools, usage: result.usage };
+      ctx.waitUntil(
+        env.DB.prepare("INSERT INTO usage_events (user_id, billed_to, provider, model, prompt_tokens, completion_tokens, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+          .bind(user.id, billedTo(result.provider), result.provider, result.model, result.usage.prompt_tokens, result.usage.completion_tokens, Date.now())
+          .run()
+          .catch((e) => console.warn("usage insert failed", e)),
+      );
+      send({ type: "done", content: result.content, meta });
+    } catch (err) {
+      if (!abort.signal.aborted) {
+        console.error("page agent failed", err);
+        send({ type: "error", message: err instanceof HTTPException ? err.message : `The model request failed: ${safeProviderMessage(err)}` });
+      }
+    } finally {
+      try {
+        server.close(1000, "done");
+      } catch {}
+    }
+  };
+
+  server.addEventListener("message", (e) => {
+    let m: { type?: string; id?: string; ok?: boolean; output?: string; error?: string };
+    try {
+      m = JSON.parse(String(e.data));
+    } catch {
+      return;
+    }
+    if (m.type === "start" && !started) {
+      started = true;
+      ctx.waitUntil(run(m as never));
+    } else if (m.type === "tool_result" && m.id) {
+      const resolve = waiting.get(m.id);
+      waiting.delete(m.id);
+      resolve?.({ ok: !!m.ok, output: m.output ?? "", error: m.error });
+    }
+  });
+  const stop = () => {
+    abort.abort();
+    for (const r of waiting.values()) r({ ok: false, output: "", error: "The page was closed." });
+    waiting.clear();
+  };
+  server.addEventListener("close", stop);
+  server.addEventListener("error", stop);
+  return new Response(null, { status: 101, webSocket: client });
+});
 
 app.get("/pages/:id", requireUser, async (c) => c.json({ page: await getPage(c.env, currentUser(c).id, c.req.param("id")) }));
 

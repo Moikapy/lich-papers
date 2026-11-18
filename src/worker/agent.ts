@@ -341,8 +341,10 @@ export async function runChat(opts: {
   budget?: Budget;
   /** Extra lich plugins (tools + hooks), e.g. the decision-model plugin. */
   plugins?: Plugin[];
+  /** Overrides the budget's tool-step limit (notebook work needs more steps than Q&A). */
+  maxTurns?: number;
 }): Promise<RunResult> {
-  const agent = buildAgent(opts.providers, opts.system, opts.tools, BUDGETS[opts.budget ?? "full"].maxTurns, opts.plugins);
+  const agent = buildAgent(opts.providers, opts.system, opts.tools, opts.maxTurns ?? BUDGETS[opts.budget ?? "full"].maxTurns, opts.plugins);
   const tools: RunResult["tools"] = [];
   const passages: string[] = [];
   let sharedCalls = 0;

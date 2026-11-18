@@ -206,7 +206,8 @@ function Privacy({ app, operator, contact }: Ctx) {
       <h2>AI and your data</h2>
       <p>
         When you ask a question, your message, the relevant part of the conversation, excerpts of the paper, and related notes from your
-        knowledge base are sent to the AI provider that answers it:
+        knowledge base are sent to the AI provider that answers it. When you ask Lich from one of your pages, that page's content
+        (including its code cells and their output) is sent too:
       </p>
       <ul>
         <li>
