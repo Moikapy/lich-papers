@@ -55,8 +55,12 @@ export interface Env {
   FALLBACK_OLLAMA_MODEL?: string;
   /** Workers AI model for the last-resort chat fallback (default "@cf/zai-org/glm-4.7-flash"). */
   FALLBACK_MODEL?: string;
-  /** Fallback answers per user per day (default 20; "0" turns the fallback off). */
-  FALLBACK_DAILY_MESSAGES?: string;
+  /** Fallback answers per free user per month (default 20; "0" turns it off for free users). */
+  FALLBACK_MONTHLY_MESSAGES?: string;
+  /** Fallback answers per Pro subscriber per month (default 300). */
+  FALLBACK_PRO_MONTHLY_MESSAGES?: string;
+  /** Secret: comma-separated user IDs that can open the admin cost view. */
+  ADMIN_USER_IDS?: string;
   /** "1" lets provider base URLs use http:// (local development only). */
   ALLOW_INSECURE_PROVIDER_URLS?: string;
 }

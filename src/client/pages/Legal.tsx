@@ -221,7 +221,7 @@ function Privacy({ app, operator, contact }: Ctx) {
         </li>
         <li>
           <strong>Our fallback</strong> (our Ollama Cloud account, or Cloudflare Workers AI) answers when the other providers fail, for
-          example when free models hit their daily limit, up to a daily limit per account. Cloudflare Workers AI also runs the small decision
+          example when free models hit their daily limit, up to a monthly limit per account. Cloudflare Workers AI also runs the small decision
           model that ranks search results, tags notes, and checks answers against the paper.
         </li>
       </ul>

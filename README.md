@@ -22,8 +22,9 @@ full text and for remembering what you've learned across sessions.
   - **Paid OpenRouter models**: users who have credits on OpenRouter can pick any of its models.
   - **BYOK**: users can add keys for **OpenAI**, **Anthropic**, and **Ollama** (Ollama Cloud, or their own server over HTTPS).
   - **Fallback**: if the chosen model fails, lich fails over to the free router automatically. If that fails too (most often
-    OpenRouter's free-model limit, a 429), it answers on the app's own account, up to `FALLBACK_DAILY_MESSAGES` (default 20)
-    messages per user per day (`0` turns it off):
+    OpenRouter's free-model limit, a 429), it answers on the app's own account, up to `FALLBACK_MONTHLY_MESSAGES` (default 20)
+    messages per free user per month, or `FALLBACK_PRO_MONTHLY_MESSAGES` (default 300) per Pro subscriber (`0` turns it
+    off for that plan):
     - **Ollama Cloud** when the `FALLBACK_OLLAMA_KEY` secret is set, with `FALLBACK_OLLAMA_MODEL` (default `beam`);
     - otherwise **Workers AI** (`FALLBACK_MODEL`, default `@cf/zai-org/glm-4.7-flash`) through the `AI` binding.
 - **Decision model (optional)**: Cloudflare's [Clef / Clef Flash](https://ollama.com/library/clef) on Ollama, a small judge model that answers typed questions (yes/no, choice, score) through `/v1/systemone`. It runs on the user's own Ollama key (Settings → Decision model), or on the app's shared one: Workers AI through the `AI` binding (`DECISION_BACKEND=workers-ai`; Clef Flash is $0.09 per million input tokens, no output charge) or `DECISION_OLLAMA_KEY`. When it's on:
@@ -125,6 +126,7 @@ setup, every push to `main` deploys.
    - **Customer portal.** In Stripe → Settings → Billing → Customer portal, save the settings once (allow cancellation and payment-method updates). "Manage billing" won't work until you do.
    - **No product setup needed.** Checkout creates the $10/month price inline. The price, cap and default model are the `PRO_*` vars in `wrangler.jsonc`.
    - **Free Pro for yourself or staff.** Sign up, copy your Account ID from Settings, and add it to the `COMP_PRO_USER_IDS` secret (comma-separated). On your next visit the account switches to Pro, with no Stripe involved and the same monthly cap. Remove the ID to undo. This uses IDs rather than emails because emails aren't verified, so anyone could register your address first.
+   - **Admin cost view.** Add your Account ID to the `ADMIN_USER_IDS` secret (comma-separated). Settings then links to **AI costs** (`/admin/costs`): what the app pays for AI over 7/30/90 days, by source, top users and day, estimated from logged tokens and list prices (OpenRouter model prices, Workers AI rates; Ollama Cloud counts as a flat plan). Clef decisions are logged too (`billed_to = "decision"`).
    - **Check the default model.** Before launch, confirm that `PRO_DEFAULT_MODEL` is a current OpenRouter model ID with the price you expect.
 
 Deploying from your machine instead: `npx wrangler login && npm run deploy`, then `npx wrangler secret put ENCRYPTION_KEY`.

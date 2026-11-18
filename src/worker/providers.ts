@@ -219,7 +219,7 @@ export async function resolveChain(
     });
   }
   // Only a fallback: users with no usable provider still get the message above.
-  const lastResort = await fallbackProvider(env, user.id);
+  const lastResort = await fallbackProvider(env, user);
   if (lastResort) chain.push(lastResort);
   const primary = chain[0]!;
   return { providers: chain, label: `${primary.name}/${primary.model}` };

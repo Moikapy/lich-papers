@@ -14,6 +14,7 @@ import { SettingsPage } from "./pages/Settings";
 import { AuthPage } from "./pages/Auth";
 import { OpenRouterCallback } from "./pages/OpenRouterCallback";
 import { LegalPage, type LegalDoc } from "./pages/Legal";
+import { AdminCostsPage } from "./pages/AdminCosts";
 
 const LEGAL_PATHS: Record<string, LegalDoc> = { "/terms": "terms", "/privacy": "privacy", "/refunds": "refunds", "/copyright": "copyright" };
 
@@ -43,6 +44,7 @@ export function App() {
   else if (path === "/library") page = <LibraryPage />;
   else if (path === "/knowledge") page = <KnowledgePage />;
   else if (path === "/settings") page = <SettingsPage />;
+  else if (path === "/admin/costs") page = <AdminCostsPage />;
   else if (path === "/login" || path === "/signup") page = <AuthPage mode={path === "/login" ? "login" : "signup"} />;
   else if (path === "/openrouter/callback") page = <OpenRouterCallback />;
   else if (LEGAL_PATHS[path]) page = <LegalPage key={path} doc={LEGAL_PATHS[path]!} />;

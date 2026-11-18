@@ -5,7 +5,7 @@ import { OLLAMA_CLOUD_BASE, ollamaModelName } from "./providers";
 
 /**
  * Last-resort chat fallback, paid for by the app. It answers when every other provider in the chain
- * fails (most often OpenRouter's free-model limit, a 429) and is capped per user per day. It runs on
+ * fails (most often OpenRouter's free-model limit, a 429) and is capped per user per month (by plan). It runs on
  * the app's Ollama Cloud account when FALLBACK_OLLAMA_KEY is set (model FALLBACK_OLLAMA_MODEL,
  * default "beam"), otherwise on Workers AI through the AI binding.
  */
@@ -16,42 +16,45 @@ export const FALLBACK_PROVIDERS: ReadonlySet<string> = new Set([WORKERS_AI_PROVI
 export const DEFAULT_OLLAMA_FALLBACK_MODEL = "beam";
 /** Tool-calling model with an OpenAI-style chat schema ($0.06 / $0.40 per M input / output tokens). */
 export const DEFAULT_FALLBACK_MODEL = "@cf/zai-org/glm-4.7-flash";
-/** Fallback answers per user per UTC day. */
-export const DEFAULT_FALLBACK_DAILY = 20;
+/** Fallback answers per user per UTC calendar month, by plan. */
+export const DEFAULT_FALLBACK_MONTHLY = { free: 20, pro: 300 } as const;
 
 export const fallbackModel = (env: Env) => env.FALLBACK_MODEL?.trim() || DEFAULT_FALLBACK_MODEL;
-export const fallbackDailyLimit = (env: Env) => {
-  const n = Number(env.FALLBACK_DAILY_MESSAGES ?? DEFAULT_FALLBACK_DAILY);
-  return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : DEFAULT_FALLBACK_DAILY;
+const count = (raw: string | undefined, fallback: number) => {
+  const n = Number(raw ?? fallback);
+  return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : fallback;
 };
+/** FALLBACK_MONTHLY_MESSAGES (free) / FALLBACK_PRO_MONTHLY_MESSAGES (Pro); 0 turns the fallback off for that plan. */
+export const fallbackMonthlyLimit = (env: Env, plan: "free" | "pro") =>
+  plan === "pro" ? count(env.FALLBACK_PRO_MONTHLY_MESSAGES, DEFAULT_FALLBACK_MONTHLY.pro) : count(env.FALLBACK_MONTHLY_MESSAGES, DEFAULT_FALLBACK_MONTHLY.free);
 
-/** free_usage row key for a user's fallback messages today (UTC). */
-const dayKey = (now = Date.now()) => `fallback:${new Date(now).toISOString().slice(0, 10)}`;
+/** free_usage row key for a user's fallback messages this month (UTC), e.g. "fallback:2026-10". */
+export const monthKey = (now = Date.now()) => `fallback:${new Date(now).toISOString().slice(0, 7)}`;
 
-export async function fallbackUsedToday(env: Env, userId: string): Promise<number> {
-  const row = await env.DB.prepare("SELECT requests FROM free_usage WHERE user_id = ? AND day = ?").bind(userId, dayKey()).first<{ requests: number }>();
+export async function fallbackUsedThisMonth(env: Env, userId: string): Promise<number> {
+  const row = await env.DB.prepare("SELECT requests FROM free_usage WHERE user_id = ? AND day = ?").bind(userId, monthKey()).first<{ requests: number }>();
   return row?.requests ?? 0;
 }
 
-/** Counts one fallback message for today. */
+/** Counts one fallback message for this month. */
 export async function recordFallbackUse(env: Env, userId: string): Promise<void> {
   await env.DB.prepare(
     `INSERT INTO free_usage (user_id, day, requests) VALUES (?, ?, 1)
      ON CONFLICT (user_id, day) DO UPDATE SET requests = requests + 1`,
   )
-    .bind(userId, dayKey())
+    .bind(userId, monthKey())
     .run();
 }
 
 /**
  * The fallback provider for a user, or null when none is configured, the fallback is turned off
- * (FALLBACK_DAILY_MESSAGES=0) or the user has used today's fallback messages.
+ * for the user's plan, or the user has used this month's fallback messages.
  */
-export async function fallbackProvider(env: Env, userId: string): Promise<ProviderConfig | null> {
-  const limit = fallbackDailyLimit(env);
+export async function fallbackProvider(env: Env, user: { id: string; plan: "free" | "pro" }): Promise<ProviderConfig | null> {
+  const limit = fallbackMonthlyLimit(env, user.plan);
   const ollamaKey = env.FALLBACK_OLLAMA_KEY?.trim();
   if ((!ollamaKey && !env.AI) || limit <= 0) return null;
-  if ((await fallbackUsedToday(env, userId)) >= limit) return null;
+  if ((await fallbackUsedThisMonth(env, user.id)) >= limit) return null;
   if (ollamaKey) {
     return {
       kind: "ollama",

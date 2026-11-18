@@ -13,6 +13,7 @@ import { outline } from "./paper-text";
 import { decisionPlugin } from "./decision-plugin";
 import { recordFallbackUse } from "./workers-ai";
 import { createPage, deletePage, getPage, importNotes, listPages, updatePage } from "./pages";
+import { costReport, isAdmin } from "./costs";
 import { figureLoader, paperTools, runChat, type UsageCounter, safeProviderMessage, summarize, systemPrompt, type Budget } from "./agent";
 import { applyComp, loadProKey, proAllowance, revokeProKey, proCapUsd, stripe, syncSubscription, verifyStripeSignature, type StripeSubscription } from "./billing";
 import {
@@ -178,7 +179,7 @@ app.get("/search", async (c) => {
   // Optional: re-rank a relevance-sorted free-text search with the decision model.
   const user = c.get("user");
   if (c.req.query("rerank") === "1" && user && q && !parseArxivId(q) && sort !== "submittedDate" && sort !== "lastUpdatedDate") {
-    const cfg = await decisionConfig(c.env, user);
+    const cfg = await decisionConfig(c.env, user, c.executionCtx);
     const ranked = cfg ? await rerank(cfg, q, result.papers) : null;
     if (ranked) return c.json({ ...result, papers: ranked, reranked: true });
   }
@@ -239,6 +240,7 @@ app.get("/settings", requireUser, async (c) => {
   return c.json({
     default_provider: user.default_provider,
     default_model: user.default_model,
+    is_admin: isAdmin(c.env, user),
     decision: {
       model: decisionModel,
       server_available: serverDecisions,
@@ -527,7 +529,7 @@ app.post("/sessions/:id/messages", requireUser, async (c) => {
         if (p?.summary) buildsOn.push({ title: p.title, summary: p.summary });
       }
 
-      const decision = await decisionConfig(c.env, user);
+      const decision = await decisionConfig(c.env, user, c.executionCtx);
       const routing = decision ? await routeQuestion(decision, paper.title, outline(paper.body), input) : null;
       const hint = routing ? routingHint(routing) : null;
       const figures = figureLoader(c.env, paper, c.executionCtx);
@@ -600,6 +602,15 @@ app.post("/sessions/:id/messages", requireUser, async (c) => {
   });
 });
 
+// ---------------------------------------------------------------- admin
+
+/** What the app pays for AI over the last `days` (default 30), for ADMIN_USER_IDS. */
+app.get("/admin/costs", requireUser, async (c) => {
+  if (!isAdmin(c.env, currentUser(c))) throw new HTTPException(403, { message: "Admins only" });
+  const days = Math.min(365, Math.max(1, Math.floor(Number(c.req.query("days") ?? 30)) || 30));
+  return c.json(await costReport(c.env, days));
+});
+
 // ---------------------------------------------------------------- pages
 
 app.get("/pages", requireUser, async (c) => c.json({ pages: await listPages(c.env, currentUser(c).id) }));
@@ -652,7 +663,7 @@ app.post("/knowledge", requireUser, async (c) => {
     tags: String(tags ?? ""),
     arxiv_id: arxiv_id ? parseArxivId(String(arxiv_id)) : null,
   });
-  const decision = await decisionConfig(c.env, currentUser(c));
+  const decision = await decisionConfig(c.env, currentUser(c), c.executionCtx);
   if (decision) c.executionCtx.waitUntil(autoTagNote(c.env, decision, id, title ? String(title) : "", text, String(tags ?? "")));
   return c.json({ id });
 });

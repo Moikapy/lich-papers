@@ -32,6 +32,7 @@ interface DecisionSettings {
 }
 
 interface SettingsData {
+  is_admin?: boolean;
   default_provider: ChatProvider;
   default_model: string | null;
   decision: DecisionSettings;
@@ -129,6 +130,14 @@ export function SettingsPage() {
               <KeyCard key={p} provider={p} status={data.providers[p]} reload={load} />
             ))}
             <DecisionCard decision={data.decision} ollamaConnected={data.providers.ollama.connected} reload={load} />
+            {data.is_admin && (
+              <section className="card">
+                <h3>Admin</h3>
+                <p className="small">
+                  <Link href="/admin/costs">AI costs</Link>: what the app pays for AI, by source, user and day.
+                </p>
+              </section>
+            )}
             <section className="card">
               <h3>Account</h3>
               <p className="small">

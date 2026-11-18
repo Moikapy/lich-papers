@@ -1,4 +1,4 @@
-import type { Env, User } from "./env";
+import type { Ctx, Env, User } from "./env";
 import { isOllamaCloud, loadKeys, ollamaModelName, OLLAMA_CLOUD_BASE } from "./providers";
 
 /**
@@ -25,6 +25,8 @@ export type DecisionConfig =
       model: string;
       /** Who pays: the user's own Ollama key, or the server's. */
       source: "user" | "server";
+      /** Called with the input tokens each decision used, for usage accounting. */
+      onUsage?: (inputTokens: number) => void;
     }
   | {
       kind: "workers_ai";
@@ -32,6 +34,7 @@ export type DecisionConfig =
       model: WorkersAiModel;
       /** Workers AI is always billed to the app's Cloudflare account. */
       source: "server";
+      onUsage?: (inputTokens: number) => void;
     };
 
 /** Clef models on Workers AI, by their System One model selector. */
@@ -73,13 +76,14 @@ export async function userDecisionModel(env: Env, userId: string): Promise<strin
  *      "workers-ai", or Ollama when DECISION_OLLAMA_KEY / a self-hosted DECISION_OLLAMA_BASE is set;
  *   3. otherwise none.
  */
-export async function decisionConfig(env: Env, user: Pick<User, "id"> | null): Promise<DecisionConfig | null> {
+export async function decisionConfig(env: Env, user: Pick<User, "id"> | null, ctx?: Ctx): Promise<DecisionConfig | null> {
   const choice = user ? await userDecisionModel(env, user.id) : null;
   if (choice === DECISIONS_OFF) return null;
+  let cfg: DecisionConfig | null = null;
   if (user && choice) {
     const k = (await loadKeys(env, user.id)).get("ollama");
     if (k && (k.api_key || !isOllamaCloud(k.base_url))) {
-      return {
+      cfg = {
         base_url: k.base_url ?? OLLAMA_CLOUD_BASE,
         ...(k.api_key ? { api_key: k.api_key } : {}),
         model: ollamaModelName(choice, k.base_url),
@@ -87,7 +91,22 @@ export async function decisionConfig(env: Env, user: Pick<User, "id"> | null): P
       };
     }
   }
-  return serverDecisionConfig(env);
+  cfg ??= serverDecisionConfig(env);
+  if (cfg && user && ctx) cfg.onUsage = usageRecorder(env, user.id, cfg, ctx);
+  return cfg;
+}
+
+/** Records each decision's input tokens in usage_events (billed to "decision" when the app pays). */
+function usageRecorder(env: Env, userId: string, cfg: DecisionConfig, ctx: Ctx): (inputTokens: number) => void {
+  const provider = cfg.kind === "workers_ai" ? "workers-ai-decision" : "ollama-decision";
+  const billedTo = cfg.source === "user" ? "user" : "decision";
+  return (inputTokens) =>
+    ctx.waitUntil(
+      env.DB.prepare("INSERT INTO usage_events (user_id, billed_to, provider, model, prompt_tokens, completion_tokens, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)")
+        .bind(userId, billedTo, provider, cfg.model, inputTokens, Date.now())
+        .run()
+        .catch((e) => console.warn("decision usage failed", e)),
+    );
 }
 
 /** The app's shared decision model, if the server has one configured. */
@@ -203,6 +222,8 @@ export async function decide<Q extends Record<string, Question>>(
       }
       body = await res.json();
     }
+    const used = Number((body as { usage?: { input_tokens?: unknown } } | null)?.usage?.input_tokens);
+    if (used > 0) cfg.onUsage?.(used);
     const out: Partial<Record<keyof Q, Answer>> = {};
     for (const [name, q] of Object.entries(questions)) {
       const a = readAnswer(body, name, q);
