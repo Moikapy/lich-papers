@@ -7,6 +7,7 @@ import { TaskItem, TaskList } from "@tiptap/extension-list";
 import { Mathematics } from "@tiptap/extension-mathematics";
 import Suggestion, { type SuggestionProps } from "@tiptap/suggestion";
 import { CodeCell } from "../notebook/CodeCell";
+import { PaperEmbed, parseArxivRef } from "../notebook/PaperEmbed";
 import type { Kernel } from "../notebook/kernel";
 import "katex/dist/katex.min.css";
 
@@ -31,6 +32,15 @@ export const SLASH_ITEMS: SlashItem[] = [
   { title: "Python cell", hint: "run", keywords: "code notebook jupyter py run cell", run: (e, r) => e.chain().focus().deleteRange(r).insertCodeCell({ language: "python" }).run() },
   { title: "JavaScript cell", hint: "run", keywords: "code notebook js run cell", run: (e, r) => e.chain().focus().deleteRange(r).insertCodeCell({ language: "javascript" }).run() },
   { title: "TypeScript cell", hint: "run", keywords: "code notebook ts run cell", run: (e, r) => e.chain().focus().deleteRange(r).insertCodeCell({ language: "typescript" }).run() },
+  {
+    title: "arXiv paper",
+    hint: "embed",
+    keywords: "paper arxiv cite reference embed",
+    run: (e, r) => {
+      const id = parseArxivRef(window.prompt("arXiv id or URL", "") ?? "");
+      if (id) e.chain().focus().deleteRange(r).insertPaper(id).run();
+    },
+  },
   { title: "Code block", hint: "```", keywords: "code pre snippet", run: (e, r) => e.chain().focus().deleteRange(r).toggleCodeBlock().run() },
   { title: "Divider", hint: "---", keywords: "hr rule separator", run: (e, r) => e.chain().focus().deleteRange(r).setHorizontalRule().run() },
   {
@@ -109,9 +119,11 @@ export interface EditorProps {
   autofocus?: boolean;
   /** Runs this page's code cells. */
   kernel?: Kernel | null;
+  /** Called with the editor once it exists (and with null when it goes away). */
+  onEditor?: (editor: TiptapEditor | null) => void;
 }
 
-export function PageEditor({ initial, onChange, autofocus, kernel }: EditorProps) {
+export function PageEditor({ initial, onChange, autofocus, kernel, onEditor }: EditorProps) {
   const kernelRef = useRef<Kernel | null>(null);
   kernelRef.current = kernel ?? null;
   const [menu, setMenuState] = useState<MenuState>(null);
@@ -149,12 +161,18 @@ export function PageEditor({ initial, onChange, autofocus, kernel }: EditorProps
       }),
       slashCommand(menuStore),
       CodeCell.configure({ getKernel: () => kernelRef.current }),
+      PaperEmbed,
     ],
     content: (initial as never) ?? "",
     autofocus: autofocus ? "end" : false,
     editorProps: { attributes: { class: "page-doc", "aria-label": "Page content" } },
     onUpdate: ({ editor }) => onChangeRef.current(editor.getJSON(), editor.getText({ blockSeparator: "\n" })),
   });
+
+  useEffect(() => {
+    onEditor?.(editor ?? null);
+    return () => onEditor?.(null);
+  }, [editor]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // An imported page arrives as HTML; save it once as JSON so it's stored in the editor's own format.
   useEffect(() => {

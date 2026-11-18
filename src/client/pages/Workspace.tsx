@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type Page, type PageSummary } from "../api";
 import { PageEditor } from "../editor/Editor";
 import { Kernel } from "../notebook/kernel";
+import { LichPanel } from "../notebook/LichPanel";
+import type { Editor } from "@tiptap/react";
 import { Link } from "../components/Link";
 import { navigate } from "../router";
 import { RequireAuth } from "./RequireAuth";
@@ -222,6 +224,20 @@ function PageView({ id, onMeta }: { id: string; onMeta: (m: Partial<PageSummary>
   const [kernel] = useState(() => new Kernel());
   useEffect(() => () => kernel.dispose(), [kernel]);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [editor, setEditor] = useState<Editor | null>(null);
+  const [lich, setLich] = useState(() => {
+    try {
+      return localStorage.getItem("lp_lich") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleLich = (open: boolean) => {
+    setLich(open);
+    try {
+      localStorage.setItem("lp_lich", open ? "1" : "0");
+    } catch {}
+  };
 
   useEffect(() => {
     api<{ page: Page }>(`/pages/${id}`)
@@ -292,6 +308,7 @@ function PageView({ id, onMeta }: { id: string; onMeta: (m: Partial<PageSummary>
   if (!page) return <p className="muted">Loading…</p>;
 
   return (
+    <div className={`page-with-lich${lich ? " open" : ""}`}>
     <article className="page">
       <div className="page-head">
         <button
@@ -307,8 +324,15 @@ function PageView({ id, onMeta }: { id: string; onMeta: (m: Partial<PageSummary>
         >
           {page.icon ?? "📄"}
         </button>
-        <span className={`save-state ${state}`} aria-live="polite">
-          {state === "saved" ? "Saved" : state === "saving" ? "Saving…" : state === "unsaved" ? "Editing…" : "Not saved, retrying on next edit"}
+        <span className="row">
+          <span className={`save-state ${state}`} aria-live="polite">
+            {state === "saved" ? "Saved" : state === "saving" ? "Saving…" : state === "unsaved" ? "Editing…" : "Not saved, retrying on next edit"}
+          </span>
+          {!lich && (
+            <button className="ask-lich" onClick={() => toggleLich(true)}>
+              <span className="glyph">⚱</span> Ask Lich
+            </button>
+          )}
         </span>
       </div>
       <input
@@ -331,7 +355,9 @@ function PageView({ id, onMeta }: { id: string; onMeta: (m: Partial<PageSummary>
           }
         }}
       />
-      <PageEditor initial={initial} kernel={kernel} autofocus={!!page.title && !page.content} onChange={(content, text) => queue({ content, text })} />
+      <PageEditor initial={initial} kernel={kernel} onEditor={setEditor} autofocus={!!page.title && !page.content} onChange={(content, text) => queue({ content, text })} />
     </article>
+    {lich && <LichPanel pageId={id} editor={editor} onClose={() => toggleLich(false)} />}
+    </div>
   );
 }
